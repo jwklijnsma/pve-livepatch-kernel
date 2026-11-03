@@ -19,7 +19,7 @@ sudo apt install ./pve-livepatch_<version>_all.deb
 ```
 
 Build the package yourself: `packaging/build-deb.sh [version]` → `dist/`.
-Releases are built by GitHub Actions: pushing a tag `vX.Y.Z` builds `pve-livepatch_X.Y.Z_all.deb`, test-installs it and attaches it (plus `SHA256SUMS`) to a GitHub Release.
+Releases are built by GitHub Actions — push a tag `vX.Y.Z`, or run **Actions → release .deb → Run workflow** (creates the tag for you). It builds `pve-livepatch_X.Y.Z_all.deb`, test-installs it and attaches it (plus `SHA256SUMS`) to a GitHub Release.
 
 ## Quick start
 

@@ -1,21 +1,25 @@
 name: release .deb
 
-# Push a tag like v1.2.0 → builds pve-livepatch_1.2.0_all.deb and publishes a GitHub Release.
-# Manual run (Actions tab) → builds the .deb as a workflow artifact only, no release.
+# Two ways to make a release (both build, test-install and publish the .deb):
+#   1. push a tag:           git tag v1.2.0 && git push origin v1.2.0
+#   2. run it manually:      Actions → "release .deb" → Run workflow
+#                            (version empty = SCRIPT_VERSION from pve-livepatch.sh;
+#                             the tag v<version> is created automatically)
+# Running it again for an existing version replaces that release's files.
 on:
   push:
     tags: ["v*"]
   workflow_dispatch:
     inputs:
       version:
-        description: "Package version (default: version in the script)"
+        description: "Version to release, e.g. 1.2.0 (empty = version in the script)"
         required: false
 
 permissions:
   contents: write
 
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -27,18 +31,30 @@ jobs:
 
       - name: Determine version
         id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then v="${GITHUB_REF_NAME#v}"
-          else v="${{ inputs.version }}"; fi
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            v="${GITHUB_REF_NAME}"
+          elif [[ -n "${INPUT_VERSION}" ]]; then
+            v="${INPUT_VERSION}"
+          else
+            v=$(sed -n 's/^readonly SCRIPT_VERSION="\(.*\)"/\1/p' pve-livepatch.sh)
+          fi
+          v="${v#v}"
+          [[ -n "$v" ]] || { echo "::error::could not determine version"; exit 1; }
           echo "version=${v}" >> "$GITHUB_OUTPUT"
+          echo "tag=v${v}"    >> "$GITHUB_OUTPUT"
+          echo "Releasing v${v}"
 
       - name: Build .deb
         id: deb
         run: |
           deb=$(packaging/build-deb.sh "${{ steps.ver.outputs.version }}")
-          echo "path=${deb}" >> "$GITHUB_OUTPUT"
-          echo "name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
+          echo "path=${deb}"              >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$deb")"  >> "$GITHUB_OUTPUT"
           (cd dist && sha256sum ./*.deb > SHA256SUMS)
+          ls -l dist
 
       - name: Test install
         run: |
@@ -46,7 +62,6 @@ jobs:
           sudo apt-get install -y "${{ steps.deb.outputs.path }}"
           pve-livepatch --version
           pve-livepatch --help >/dev/null
-          dpkg-deb --info "${{ steps.deb.outputs.path }}"
           sudo apt-get remove -y pve-livepatch
 
       - uses: actions/upload-artifact@v4
@@ -55,20 +70,27 @@ jobs:
           path: dist/*
 
       - name: Publish GitHub Release
-        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          DEB: ${{ steps.deb.outputs.name }}
         run: |
-          tag="${GITHUB_REF_NAME}"
-          notes="Install on Proxmox VE / Ubuntu:
+          cat > notes.md <<EOF
+          Install on Proxmox VE / Ubuntu:
 
           \`\`\`bash
-          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${{ steps.deb.outputs.name }}
-          sudo apt install ./${{ steps.deb.outputs.name }}
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/${DEB}
+          sudo apt install ./${DEB}
           sudo pve-livepatch setup && sudo pve-livepatch check
-          \`\`\`"
-          if gh release view "$tag" >/dev/null 2>&1; then
-            gh release upload "$tag" dist/* --clobber
+          \`\`\`
+          EOF
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG exists — replacing assets"
+            gh release upload "$TAG" dist/* --clobber
           else
-            gh release create "$tag" dist/* --title "$tag" --notes "$notes" --generate-notes
+            # creates the tag on this commit when it doesn't exist yet (manual runs)
+            gh release create "$TAG" dist/* \
+              --target "$GITHUB_SHA" --title "$TAG" \
+              --notes-file notes.md --generate-notes --latest
           fi
+          gh release view "$TAG" --json url,assets --jq '.url, (.assets[].name)'
