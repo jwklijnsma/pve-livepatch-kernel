@@ -9,6 +9,7 @@ setup() {
   mkdir -p "$SRC/kernel"
   echo "VERSION = 6" > "$SRC/Makefile"
   printf 'int answer(void)\n{\n\treturn 41;\n}\n' > "$SRC/kernel/answer.c"
+  echo "fake vmlinux" > "$SRC/vmlinux"            # original kernel already compiled
 
   PATCH="$BATS_TEST_TMPDIR/CVE-2026.1234.patch"
   cat > "$PATCH" <<'EOF'
@@ -29,6 +30,35 @@ EOF
   local ko="$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-cve_2026_1234.ko"
   [[ -f $ko ]]
   [[ ${lines[-1]} == "$ko" ]]
+}
+
+@test "compiles the original vmlinux first when it is missing" {
+  rm "$SRC/vmlinux"
+  stub make 'log_call make "$@"; [[ " $* " == *" vmlinux "* ]] && echo built > "$2/vmlinux"; exit 0'
+  run lp -j 3 build "$PATCH" --name fix1
+  assert_success
+  assert_called "make -C $SRC -j3 vmlinux"
+  assert_output_contains "original vmlinux built"
+  # kpatch-build runs after vmlinux exists
+  [[ $(grep -n '^make ' "$STUB_LOG" | cut -d: -f1) -lt $(grep -n '^kpatch-build ' "$STUB_LOG" | cut -d: -f1) ]]
+}
+
+@test "does not recompile vmlinux when it is already there" {
+  stub make 'log_call make "$@"'
+  run lp build "$PATCH" --name fix1
+  assert_success
+  refute_called_match "vmlinux$"
+  grep -q '^kpatch-build ' "$STUB_LOG"
+}
+
+@test "a failing vmlinux compile stops with the log tail" {
+  rm "$SRC/vmlinux"
+  stub make 'echo "drivers/foo.c:1: error: boom"; exit 2'
+  run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "error: boom"
+  assert_output_contains "compiling the original vmlinux failed — see $PVE_LIVEPATCH_DIR/out/$KREL/vmlinux-build.log"
+  refute_called_match kpatch-build
 }
 
 @test "small mode (default): builds vmlinux only" {

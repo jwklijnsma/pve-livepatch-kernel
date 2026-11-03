@@ -33,7 +33,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.4.1"
+readonly SCRIPT_VERSION="1.4.2"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -264,6 +264,17 @@ finalise_tree() {
   sed -i "s/^EXTRAVERSION =.*/EXTRAVERSION = ${extra}/" "$src/Makefile"
   : > "$src/.scmversion"
   cp "$KCONFIG" "$src/.config"
+  # Ubuntu/PVE configs may point at certificate files that aren't part of the
+  # source tree; a plain `make vmlinux` would then fail. They only matter for
+  # module-signature checks in the reference image, not for the patched code.
+  local k v
+  for k in SYSTEM_TRUSTED_KEYS SYSTEM_REVOCATION_KEYS; do
+    v=$(sed -n "s/^CONFIG_${k}=\"\(.*\)\"$/\1/p" "$src/.config")
+    if [[ -n $v && ! -e $src/$v ]]; then
+      sed -i "s|^CONFIG_${k}=.*|CONFIG_${k}=\"\"|" "$src/.config"
+      warn "CONFIG_${k} pointed at missing '${v}' — cleared for the build"
+    fi
+  done
   make -C "$src" -s olddefconfig >/dev/null
   rel=$(make -C "$src" -s kernelrelease)
   [[ $rel == "$KREL" ]] || die "source kernelrelease '${rel}' != running '${KREL}'"
@@ -438,6 +449,18 @@ cmd_build() {
   disk_preflight
   log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}, $(build_mode): $( (( FULL )) && echo 'vmlinux + modules' || echo 'vmlinux only'))"
   log "first run compiles the original kernel, later runs only what the patch changes"
+
+  # kpatch-build -s needs the ORIGINAL kernel image (the reference for the
+  # running kernel) already compiled in the source tree. Build it once.
+  if [[ ! -f $src/vmlinux ]]; then
+    local vlog="$WORKDIR/out/$KREL/vmlinux-build.log"
+    log "Compiling the original vmlinux (first build only — the longest step)"
+    if ! make -C "$src" -j"$JOBS" vmlinux > "$vlog" 2>&1; then
+      tail -n 25 "$vlog" >&2
+      die "compiling the original vmlinux failed — see ${vlog}"
+    fi
+    ok "original vmlinux built"
+  fi
 
   local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
   if ! ( cd "$WORKDIR/out/$KREL" && \

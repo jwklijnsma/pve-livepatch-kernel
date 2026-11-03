@@ -71,6 +71,24 @@ for i in $(seq 1 2000); do printf "%040d\tbump version to 6.8.12-4 older\n" "$i"
   [[ -f $src/.scmversion ]]
 }
 
+@test "finalise_tree clears certificate options whose files are missing" {
+  local src="$BATS_TEST_TMPDIR/src"
+  mkdir -p "$src/debian"
+  printf 'EXTRAVERSION =\n' > "$src/Makefile"
+  touch "$src/debian/canonical-certs.pem"
+  cat >> "$KCONFIG" <<'EOF'
+CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"
+CONFIG_SYSTEM_REVOCATION_KEYS="debian/canonical-revoked-certs.pem"
+EOF
+  stub make '[[ " $* " == *" kernelrelease "* ]] && echo "$KREL"; exit 0'
+  run in_script "finalise_tree '$src'"
+  assert_success
+  grep -qx 'CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"' "$src/.config"
+  grep -qx 'CONFIG_SYSTEM_REVOCATION_KEYS=""' "$src/.config"
+  assert_output_contains "CONFIG_SYSTEM_REVOCATION_KEYS pointed at missing"
+  refute_output_contains "CONFIG_SYSTEM_TRUSTED_KEYS pointed"
+}
+
 @test "finalise_tree fails when kernelrelease does not match uname -r" {
   local src="$BATS_TEST_TMPDIR/src"
   mkdir -p "$src"
