@@ -1,0 +1,17 @@
+name: shellcheck
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: shellcheck -S warning pve-livepatch.sh
+      - name: Syntax / help smoke test
+        run: |
+          bash -n pve-livepatch.sh
+          ./pve-livepatch.sh --help
