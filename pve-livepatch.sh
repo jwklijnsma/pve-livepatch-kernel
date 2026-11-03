@@ -221,10 +221,11 @@ finalise_tree() {
 }
 
 # commit in pve-kernel whose subject is exactly "bump version to <pkgver>"
+# (awk reads all input: an early `exit` would SIGPIPE git log under pipefail)
 find_pve_commit() {
   local repo=$1 pkgver=$2
   git -C "$repo" log --all --format='%H%x09%s' -F --grep="bump version to ${pkgver}" \
-    | awk -F'\t' -v s="bump version to ${pkgver}" '$2==s {print $1; exit}'
+    | awk -F'\t' -v s="bump version to ${pkgver}" '!found && $2==s {print $1; found=1}'
 }
 
 source_pve() {

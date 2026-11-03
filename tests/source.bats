@@ -38,6 +38,20 @@ make_pve_repo() {
   [[ -n $output ]]
 }
 
+@test "find_pve_commit reads all of git log's output (no SIGPIPE under pipefail)" {
+  # Regression: awk used to `exit` after the first match; when git kept writing
+  # (long history, per-commit flushes) it died with SIGPIPE → exit 141 → `source`
+  # aborted under set -e. This git stub writes the match, pauses so awk can act
+  # on it, then keeps writing.
+  stub git '
+printf "%040d\tbump version to 6.8.12-4\n" 1
+sleep 0.3
+for i in $(seq 1 2000); do printf "%040d\tbump version to 6.8.12-4 older\n" "$i"; done'
+  run in_script "find_pve_commit /unused 6.8.12-4"
+  assert_success
+  [[ $output == 0000000000000000000000000000000000000001 ]]
+}
+
 @test "find_pve_commit returns nothing for an unknown version" {
   make_pve_repo
   run in_script "find_pve_commit '$REPO' 6.99.0-1"
