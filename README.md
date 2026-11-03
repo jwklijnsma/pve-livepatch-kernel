@@ -69,6 +69,27 @@ Environment: `PLATFORM` (`pve`/`ubuntu`, auto-detected), `PVE_LIVEPATCH_DIR` (de
 - **Not everything can be live patched.** Data-structure layout changes, `__init` code and out-of-tree modules (such as ZFS on PVE) can't. kpatch-build refuses those.
 - **It's a bridge, not a replacement.** Still install the real kernel update and reboot later. On a PVE cluster, live-migrate guests off each node first so VMs see no downtime.
 
+## Tests
+
+The [bats](https://github.com/bats-core/bats-core) suite in `tests/` runs without root and without a real kernel: each test gets a fake host (kernel config, `/proc/version`, `/etc/os-release`, `/sys/kernel/livepatch`) and stub `kpatch`, `kpatch-build`, `modinfo`, `gcc`, `mokutil`, `pro`… that record how they were called.
+
+```bash
+sudo apt install bats
+bats tests/
+```
+
+| File | Covers |
+|---|---|
+| `cli.bats` | help/version, argument errors, PVE vs Ubuntu detection, MOK paths |
+| `check.bats` | every readiness check: config options, sysfs, gcc mismatch, Secure Boot |
+| `build.bats` | kpatch-build arguments, name sanitising, URL patches, dry-run, signing |
+| `apply.bats` | vermagic/livepatch checks, confirm prompt, `--persist`, atomic-replace warning, status/remove |
+| `source.bats` | exact pve-kernel commit lookup, kernelrelease check, Canonical Livepatch |
+| `package.bats` | the released `.deb`: name, metadata, contents, ownership, version stamp |
+
+CI runs them on every push and pull request; the release workflow won't publish if a test fails.
+For tests, `KREL`, `KCONFIG`, `SYSFS_LP`, `PROC_VERSION` and `OS_RELEASE` can be overridden; don't set them on real hosts.
+
 ## License
 
 MIT, see [LICENSE](LICENSE). kpatch itself is GPL-2.0 and is downloaded and built separately.

@@ -27,15 +27,17 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-set -Eeuo pipefail
-
 readonly SCRIPT_VERSION="1.1.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
 readonly KPATCH_REF="${KPATCH_REF:-master}"
-KREL="$(uname -r)"; readonly KREL
-readonly KCONFIG="/boot/config-${KREL}"
+# paths are overridable so the test suite can point them at fixtures
+KREL="${KREL:-$(uname -r)}"; readonly KREL
+readonly KCONFIG="${KCONFIG:-/boot/config-${KREL}}"
+readonly SYSFS_LP="${SYSFS_LP:-/sys/kernel/livepatch}"
+readonly PROC_VERSION="${PROC_VERSION:-/proc/version}"
+readonly OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
 JOBS="${JOBS:-$(nproc)}"
 ASSUME_YES=0
 
@@ -47,7 +49,6 @@ ok()   { printf '  %s✔%s %s\n'  "$C_G" "$C_0" "$*"; }
 warn() { printf '  %s!%s %s\n'  "$C_Y" "$C_0" "$*" >&2; }
 bad()  { printf '  %s✘%s %s\n'  "$C_R" "$C_0" "$*" >&2; }
 die()  { printf '%sERROR:%s %s\n' "$C_R" "$C_0" "$*" >&2; exit 1; }
-trap 'die "failed at line $LINENO: $BASH_COMMAND"' ERR
 
 need_root() { [[ $EUID -eq 0 ]] || die "run as root"; }
 need_cmd()  { command -v "$1" >/dev/null 2>&1 || die "'$1' not found — run: $0 setup"; }
@@ -70,7 +71,7 @@ secure_boot_on() {
 detect_platform() {
   if [[ -n ${PLATFORM:-} ]]; then :
   elif command -v pveversion >/dev/null 2>&1 || [[ $KREL == *-pve ]]; then PLATFORM=pve
-  elif [[ -r /etc/os-release ]] && grep -qE '^ID=ubuntu$' /etc/os-release; then PLATFORM=ubuntu
+  elif [[ -r $OS_RELEASE ]] && grep -qE '^ID="?ubuntu"?$' "$OS_RELEASE"; then PLATFORM=ubuntu
   else die "unsupported platform (need Proxmox VE or Ubuntu); override with PLATFORM=pve|ubuntu"
   fi
   case $PLATFORM in
@@ -86,14 +87,14 @@ detect_platform() {
 platform_name() {
   case $PLATFORM in
     pve)    command -v pveversion >/dev/null 2>&1 && pveversion || echo "Proxmox VE" ;;
-    ubuntu) . /etc/os-release && echo "${PRETTY_NAME}" ;;
+    ubuntu) sed -n 's/^PRETTY_NAME="\{0,1\}\([^"]*\)"\{0,1\}$/\1/p' "$OS_RELEASE" | grep . || echo Ubuntu ;;
   esac
 }
 
 # live patches loaded that were NOT built by kpatch (e.g. Canonical's lkp_*)
 foreign_patches() {
   local d n
-  for d in /sys/kernel/livepatch/*/; do
+  for d in "$SYSFS_LP"/*/; do
     [[ -d $d ]] || continue
     n=$(basename "$d")
     [[ $n == livepatch_* ]] || echo "$n"
@@ -122,12 +123,12 @@ cmd_check() {
   [[ $(cfg_val CONFIG_HAVE_RELIABLE_STACKTRACE) == y ]] && ok "reliable stacktrace (consistency model)" \
     || warn "no reliable stacktrace — patch transitions may stall"
   [[ $(cfg_val CONFIG_KALLSYMS_ALL) == y ]] && ok "CONFIG_KALLSYMS_ALL=y" || warn "CONFIG_KALLSYMS_ALL not set"
-  [[ -d /sys/kernel/livepatch ]] && ok "/sys/kernel/livepatch present" \
-    || { bad "/sys/kernel/livepatch missing"; fail=1; }
+  [[ -d $SYSFS_LP ]] && ok "${SYSFS_LP} present" \
+    || { bad "${SYSFS_LP} missing"; fail=1; }
 
   # compiler must match the one that built the running kernel
   local kgcc lgcc
-  kgcc=$(sed -n 's/.*(gcc[^)]*) \([0-9][0-9.]*\).*/\1/p' /proc/version)
+  kgcc=$(sed -n 's/.*(gcc[^)]*) \([0-9][0-9.]*\).*/\1/p' "$PROC_VERSION")
   lgcc=$(gcc -dumpfullversion 2>/dev/null || echo "none")
   if [[ -n $kgcc && $kgcc == "$lgcc" ]]; then ok "gcc ${lgcc} matches kernel build compiler"
   else bad "gcc mismatch: kernel built with '${kgcc:-?}', local gcc is '${lgcc}'"; fail=1; fi
@@ -200,6 +201,13 @@ finalise_tree() {
   ok "source tree matches ${KREL}"
 }
 
+# commit in pve-kernel whose subject is exactly "bump version to <pkgver>"
+find_pve_commit() {
+  local repo=$1 pkgver=$2
+  git -C "$repo" log --all --format='%H%x09%s' -F --grep="bump version to ${pkgver}" \
+    | awk -F'\t' -v s="bump version to ${pkgver}" '$2==s {print $1; exit}'
+}
+
 source_pve() {
   local pkg pkgver repo commit src p n=0
   pkg=$(running_kernel_pkg)
@@ -218,8 +226,7 @@ source_pve() {
   if [[ -n ${PVE_COMMIT:-} ]]; then
     commit=$PVE_COMMIT
   else
-    commit=$(git -C "$repo" log --all --format='%H%x09%s' -F --grep="bump version to ${pkgver}" \
-             | awk -F'\t' -v s="bump version to ${pkgver}" '$2==s {print $1; exit}')
+    commit=$(find_pve_commit "$repo" "$pkgver")
   fi
   [[ -n $commit ]] || die "no 'bump version to ${pkgver}' commit found; set PVE_COMMIT=<sha> manually"
   ok "pve-kernel commit ${commit:0:12}"
@@ -385,7 +392,7 @@ cmd_apply() {
 cmd_status() {
   log "Live patches on ${KREL}"
   local d any=0
-  for d in /sys/kernel/livepatch/*/; do
+  for d in "$SYSFS_LP"/*/; do
     [[ -d $d ]] || continue
     any=1
     printf '  %-40s enabled=%s transition=%s\n' "$(basename "$d")" \
@@ -419,7 +426,7 @@ cmd_canonical() {
         log "Attaching machine to Ubuntu Pro"
         pro attach "$UBUNTU_PRO_TOKEN" --no-auto-enable
       fi
-      if compgen -G '/sys/kernel/livepatch/livepatch_*' >/dev/null; then
+      if compgen -G "$SYSFS_LP/livepatch_*" >/dev/null; then
         warn "kpatch live patches are loaded; Canonical Livepatch may replace them"
       fi
       log "Enabling Canonical Livepatch"
@@ -482,30 +489,39 @@ EOF
 }
 
 # ----------------------------------------------------------------------------- main
-while [[ $# -gt 0 ]]; do
-  case $1 in
-    -y|--yes) ASSUME_YES=1; shift ;;
-    -j)       JOBS=$2; shift 2 ;;
-    -h|--help) usage; exit 0 ;;
-    -V|--version) echo "$SCRIPT_VERSION"; exit 0 ;;
-    *) break ;;
-  esac
-done
+main() {
+  set -Eeuo pipefail
+  trap 'die "failed at line $LINENO: $BASH_COMMAND"' ERR
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      -y|--yes) ASSUME_YES=1; shift ;;
+      -j)       JOBS=$2; shift 2 ;;
+      -h|--help) usage; exit 0 ;;
+      -V|--version) echo "$SCRIPT_VERSION"; exit 0 ;;
+      *) break ;;
+    esac
+  done
 
-cmd=${1:-}; shift || true
-case $cmd in
-  ""|help) usage; exit 0 ;;
-esac
-detect_platform
-case $cmd in
-  check)     cmd_check ;;
-  setup)     cmd_setup ;;
-  source)    cmd_source ;;
-  build)     cmd_build "$@" ;;
-  apply)     cmd_apply "$@" ;;
-  status)    cmd_status ;;
-  remove)    cmd_remove "$@" ;;
-  canonical) cmd_canonical "$@" ;;
-  all)       cmd_all "$@" ;;
-  *) die "unknown command: $cmd (see --help)" ;;
-esac
+  cmd=${1:-}; shift || true
+  case $cmd in
+    ""|help) usage; exit 0 ;;
+  esac
+  detect_platform
+  case $cmd in
+    check)     cmd_check ;;
+    setup)     cmd_setup ;;
+    source)    cmd_source ;;
+    build)     cmd_build "$@" ;;
+    apply)     cmd_apply "$@" ;;
+    status)    cmd_status ;;
+    remove)    cmd_remove "$@" ;;
+    canonical) cmd_canonical "$@" ;;
+    all)       cmd_all "$@" ;;
+    *) die "unknown command: $cmd (see --help)" ;;
+  esac
+}
+
+# run main unless the file is being sourced (the test suite sources it)
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  main "$@"
+fi

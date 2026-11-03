@@ -11,7 +11,7 @@ VERSION=${VERSION#v}
 
 STAGE=$(mktemp -d); chmod 755 "$STAGE"
 trap 'rm -rf "$STAGE"' EXIT
-OUT="$ROOT/dist"
+OUT="${OUT_DIR:-$ROOT/dist}"
 mkdir -p "$OUT"
 
 # --- files

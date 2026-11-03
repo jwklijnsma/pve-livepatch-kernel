@@ -29,6 +29,11 @@ jobs:
           shellcheck -S warning pve-livepatch.sh packaging/build-deb.sh
           bash -n pve-livepatch.sh
 
+      - name: Tests (a failing test blocks the release)
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y bats
+          bats --print-output-on-failure tests/
+
       - name: Determine version
         id: ver
         env:
