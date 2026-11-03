@@ -9,6 +9,18 @@ Live patch the **running kernel without a reboot** on **Proxmox VE** and **Ubunt
 | Proxmox VE (`*-pve` kernels) | ✅ source from `pve-kernel` git + Proxmox patches | ❌ Proxmox does not ship any |
 | Ubuntu (`generic`, `lowlatency`, cloud flavours) | ✅ source from `apt-get source` | ✅ `canonical enable` (Ubuntu Pro) |
 
+## Install
+
+From a release (`.deb`, installs `/usr/sbin/pve-livepatch`):
+
+```bash
+wget https://github.com/jwklijnsma/pve-livepatch-kernel/releases/latest/download/pve-livepatch_<version>_all.deb
+sudo apt install ./pve-livepatch_<version>_all.deb
+```
+
+Build the package yourself: `packaging/build-deb.sh [version]` → `dist/`.
+Releases are built by GitHub Actions: pushing a tag `vX.Y.Z` builds `pve-livepatch_X.Y.Z_all.deb`, test-installs it and attaches it (plus `SHA256SUMS`) to a GitHub Release.
+
 ## Quick start
 
 ```bash

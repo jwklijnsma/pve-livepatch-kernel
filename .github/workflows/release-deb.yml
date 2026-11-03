@@ -1,0 +1,74 @@
+name: release .deb
+
+# Push a tag like v1.2.0 → builds pve-livepatch_1.2.0_all.deb and publishes a GitHub Release.
+# Manual run (Actions tab) → builds the .deb as a workflow artifact only, no release.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Package version (default: version in the script)"
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Lint
+        run: |
+          shellcheck -S warning pve-livepatch.sh packaging/build-deb.sh
+          bash -n pve-livepatch.sh
+
+      - name: Determine version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then v="${GITHUB_REF_NAME#v}"
+          else v="${{ inputs.version }}"; fi
+          echo "version=${v}" >> "$GITHUB_OUTPUT"
+
+      - name: Build .deb
+        id: deb
+        run: |
+          deb=$(packaging/build-deb.sh "${{ steps.ver.outputs.version }}")
+          echo "path=${deb}" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$deb")" >> "$GITHUB_OUTPUT"
+          (cd dist && sha256sum ./*.deb > SHA256SUMS)
+
+      - name: Test install
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y "${{ steps.deb.outputs.path }}"
+          pve-livepatch --version
+          pve-livepatch --help >/dev/null
+          dpkg-deb --info "${{ steps.deb.outputs.path }}"
+          sudo apt-get remove -y pve-livepatch
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.deb.outputs.name }}
+          path: dist/*
+
+      - name: Publish GitHub Release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          notes="Install on Proxmox VE / Ubuntu:
+
+          \`\`\`bash
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${tag}/${{ steps.deb.outputs.name }}
+          sudo apt install ./${{ steps.deb.outputs.name }}
+          sudo pve-livepatch setup && sudo pve-livepatch check
+          \`\`\`"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" dist/* --clobber
+          else
+            gh release create "$tag" dist/* --title "$tag" --notes "$notes" --generate-notes
+          fi
