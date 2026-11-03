@@ -73,11 +73,48 @@ setup() { setup_fake_host pve; }
   assert_output_contains "no MOK key"
 }
 
-@test "passes with Secure Boot on when the MOK key is present" {
+@test "passes with Secure Boot on when the MOK key is enrolled" {
   touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
   FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
   assert_success
-  assert_output_contains "MOK key found"
+  assert_output_contains "is enrolled"
+}
+
+@test "fails when the MOK key exists but is not enrolled" {
+  touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
+  FAKE_SB=enabled FAKE_MOK=no MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
+  assert_failure
+  assert_output_contains "exists but is not enrolled"
+  assert_output_contains "mok setup"
+}
+
+@test "fails with a reboot hint while enrollment is pending" {
+  touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
+  FAKE_SB=enabled FAKE_MOK=pending MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
+  assert_failure
+  assert_output_contains "reboot once and confirm it in MOK Manager"
+}
+
+@test "missing MOK key points at 'mok setup'" {
+  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/nokey" MOK_CERT="$BATS_TEST_TMPDIR/nocert" run lp check
+  assert_failure
+  assert_output_contains "run: "
+  assert_output_contains "mok setup"
+}
+
+@test "low disk space suggests PVE_LIVEPATCH_DIR" {
+  stub df 'echo "Avail"; echo " 12G"'
+  run lp check
+  assert_success
+  assert_output_contains "only 12G free"
+  assert_output_contains "set PVE_LIVEPATCH_DIR"
+}
+
+@test "disk check works when PVE_LIVEPATCH_DIR does not exist yet" {
+  export PVE_LIVEPATCH_DIR="$BATS_TEST_TMPDIR/not/yet/there"
+  run lp check
+  assert_success
+  refute_output_contains "df:"
 }
 
 @test "dies when the kernel config file is missing" {

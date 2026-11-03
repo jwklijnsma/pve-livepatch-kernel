@@ -50,6 +50,28 @@ setup() {
   assert_output_contains "is not a livepatch module"
 }
 
+@test "refuses an unsigned module when Secure Boot is on" {
+  FAKE_SB=enabled FAKE_SIGNER="" run lp -y apply "$KO"
+  assert_failure
+  assert_output_contains "is not signed"
+  assert_output_contains "mok setup"
+  refute_called_match "kpatch load"
+}
+
+@test "loads a signed module when Secure Boot is on and the key is enrolled" {
+  touch "$BATS_TEST_TMPDIR/k" "$BATS_TEST_TMPDIR/c"
+  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/k" MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
+  assert_success
+  refute_output_contains "not enrolled"
+  assert_called "kpatch load $KO"
+}
+
+@test "warns when the signing key is not enrolled yet" {
+  touch "$BATS_TEST_TMPDIR/k" "$BATS_TEST_TMPDIR/c"
+  FAKE_SB=enabled FAKE_MOK=no MOK_KEY="$BATS_TEST_TMPDIR/k" MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
+  assert_output_contains "MOK key is not enrolled"
+}
+
 @test "fails for a missing module file" {
   run lp -y apply "$BATS_TEST_TMPDIR/nope.ko"
   assert_failure

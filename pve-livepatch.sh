@@ -27,7 +27,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.1.0"
+readonly SCRIPT_VERSION="1.2.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -64,6 +64,17 @@ src_dir() { echo "${WORKDIR}/src/${KREL}"; }
 
 secure_boot_on() {
   command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'
+}
+
+# enrolled | pending | not-enrolled | missing
+mok_state() {
+  [[ -r $MOK_KEY && -r $MOK_CERT ]] || { echo missing; return; }
+  local out; out=$(mokutil --test-key "$MOK_CERT" 2>&1 || true)
+  case $out in
+    *"already enrolled"*)                 echo enrolled ;;
+    *"already in the enrollment request"*) echo pending ;;
+    *)                                    echo not-enrolled ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------- platform
@@ -136,8 +147,12 @@ cmd_check() {
   # secure boot / module signing
   if secure_boot_on; then
     warn "Secure Boot enabled — patch modules must be signed with an enrolled MOK key"
-    [[ -r $MOK_KEY && -r $MOK_CERT ]] && ok "MOK key found (${MOK_KEY}) — build will sign modules" \
-      || { bad "no MOK key at ${MOK_KEY}; set MOK_KEY/MOK_CERT"; fail=1; }
+    case $(mok_state) in
+      enrolled)     ok "MOK key ${MOK_CERT} is enrolled — build will sign modules" ;;
+      pending)      bad "MOK key enrollment is pending — reboot once and confirm it in MOK Manager"; fail=1 ;;
+      not-enrolled) bad "MOK key ${MOK_CERT} exists but is not enrolled — run: $0 mok setup"; fail=1 ;;
+      missing)      bad "no MOK key at ${MOK_KEY} — run: $0 mok setup"; fail=1 ;;
+    esac
   else ok "Secure Boot off — unsigned modules can load"
   fi
   [[ -r /sys/kernel/security/lockdown ]] && ok "lockdown: $(< /sys/kernel/security/lockdown)"
@@ -146,8 +161,12 @@ cmd_check() {
     warn "Canonical Livepatch is installed — kpatch atomic-replace patches would replace its fixes"
   fi
 
-  local disk; disk=$(df -BG --output=avail "$(dirname "$WORKDIR")" | tail -1 | tr -dc 0-9)
-  (( disk >= 30 )) && ok "${disk}G free for ${WORKDIR}" || warn "only ${disk}G free — build needs ~30G"
+  local dpath=$WORKDIR disk
+  while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
+  disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
+  if (( disk >= 30 )); then ok "${disk}G free for ${WORKDIR}"
+  else warn "only ${disk}G free on ${dpath} — build needs ~30G; set PVE_LIVEPATCH_DIR to a larger disk (or build on another node with the same kernel)"
+  fi
 
   command -v kpatch-build >/dev/null 2>&1 && ok "kpatch-build installed" || warn "kpatch not installed (run: $0 setup)"
 
@@ -370,6 +389,12 @@ cmd_apply() {
   local vm; vm=$(modinfo -F vermagic "$ko" | awk '{print $1}')
   [[ $vm == "$KREL" ]] || die "module vermagic '${vm}' does not match running kernel '${KREL}'"
   modinfo -F livepatch "$ko" | grep -qx Y || die "$(basename "$ko") is not a livepatch module"
+  if secure_boot_on; then
+    [[ -n $(modinfo -F signer "$ko" 2>/dev/null) ]] \
+      || die "Secure Boot is on and $(basename "$ko") is not signed — run '$0 mok setup', then rebuild"
+    [[ $(mok_state) == enrolled ]] \
+      || warn "MOK key is not enrolled (yet) — the kernel will probably reject this module"
+  fi
 
   local foreign; foreign=$(foreign_patches | tr '\n' ' ')
   if [[ -n $foreign ]] && [[ $(modinfo -F livepatch_replace "$ko" 2>/dev/null || echo Y) != N ]]; then
@@ -410,6 +435,60 @@ cmd_remove() {
   kpatch unload "$name"
   kpatch uninstall "$name" 2>/dev/null || true
   cmd_status
+}
+
+# ----------------------------------------------------------------------------- mok (Secure Boot)
+cmd_mok() {
+  local action=${1:-status}
+  case $action in
+    status)
+      echo "  key:  ${MOK_KEY}"
+      echo "  cert: ${MOK_CERT}"
+      if secure_boot_on; then ok "Secure Boot enabled — modules must be signed"
+      else ok "Secure Boot disabled — signing optional"; fi
+      case $(mok_state) in
+        enrolled)     ok "key is enrolled" ;;
+        pending)      warn "enrollment pending — reboot once and confirm it in MOK Manager" ;;
+        not-enrolled) warn "key exists but is not enrolled — run: $0 mok setup" ;;
+        missing)      warn "no key yet — run: $0 mok setup" ;;
+      esac ;;
+    setup)
+      need_root; need_cmd mokutil
+      if [[ -r $MOK_KEY && -r $MOK_CERT ]]; then
+        ok "using existing key ${MOK_KEY}"
+      else
+        [[ -e $MOK_KEY || -e $MOK_CERT ]] \
+          && die "only one of ${MOK_KEY} / ${MOK_CERT} exists — refusing to overwrite; fix or remove it"
+        need_cmd openssl
+        log "Creating MOK signing key"
+        install -d -m 700 "$(dirname "$MOK_KEY")"
+        mkdir -p "$(dirname "$MOK_CERT")"
+        ( umask 077
+          openssl req -new -x509 -nodes -days 36500 -newkey rsa:2048 \
+            -subj "/CN=$(hostname -s) pve-livepatch module signing key/" \
+            -keyout "$MOK_KEY" -outform DER -out "$MOK_CERT" >/dev/null 2>&1 )
+        ok "created ${MOK_KEY} (private, keep it safe) and ${MOK_CERT}"
+      fi
+      case $(mok_state) in
+        enrolled) ok "key is already enrolled — nothing to do"; return 0 ;;
+        pending)  warn "enrollment already pending — reboot once and confirm it in MOK Manager"; return 0 ;;
+      esac
+      log "Requesting enrollment — choose a one-time password, you need it at the next boot"
+      mokutil --import "$MOK_CERT"
+      cat <<EOF
+
+  Next steps (one-time, needs ONE reboot because Secure Boot keys live in firmware):
+    1. Reboot this node (live-migrate guests off first).
+    2. At the blue "MOK management" screen: Enroll MOK → Continue → Yes,
+       enter the password you just chose → Reboot.
+    3. Check: $0 mok status   (should say: key is enrolled)
+  After that, live patches signed with this key load without any reboot.
+  Tip: copy ${MOK_KEY} and ${MOK_CERT} to your other nodes and run
+       '$0 mok setup' there, so one signed module loads on every node.
+EOF
+      ;;
+    *) die "usage: $0 mok setup|status" ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------- canonical (Ubuntu)
@@ -471,6 +550,7 @@ Usage: $0 [-y] [-j N] <command> [args]
   status                              show loaded live patches
   remove <name>                       unload a live patch
   all <file.patch|URL> [--name N]     check → setup → source → build → apply --persist
+  mok setup|status                    Secure Boot: create + enroll the module signing key
   canonical enable|status|disable     (Ubuntu) Canonical Livepatch via Ubuntu Pro
 
 Options:
@@ -515,6 +595,7 @@ main() {
     apply)     cmd_apply "$@" ;;
     status)    cmd_status ;;
     remove)    cmd_remove "$@" ;;
+    mok)       cmd_mok "$@" ;;
     canonical) cmd_canonical "$@" ;;
     all)       cmd_all "$@" ;;
     *) die "unknown command: $cmd (see --help)" ;;

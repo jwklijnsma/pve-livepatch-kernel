@@ -39,7 +39,17 @@ setup_fake_host() {
 
   # default stubs: a healthy, live-patchable host with Secure Boot off
   stub gcc       '[[ $1 == -dumpfullversion ]] && echo "${FAKE_GCC:-12.2.0}"'
-  stub mokutil   'echo "SecureBoot ${FAKE_SB:-disabled}"'
+  stub mokutil '
+case $1 in
+  --sb-state) echo "SecureBoot ${FAKE_SB:-disabled}" ;;
+  --test-key)
+    case ${FAKE_MOK:-enrolled} in
+      enrolled) echo "$2 is already enrolled" ;;
+      pending)  echo "$2 is already in the enrollment request" ;;
+      *)        echo "$2 is not enrolled" ;;
+    esac ;;
+  *) log_call mokutil "$@" ;;
+esac'
   stub kpatch    'log_call kpatch "$@"; [[ $1 == version ]] && echo 0.9.10; exit 0'
   stub systemctl 'log_call systemctl "$@"'
   stub kpatch-build '
@@ -53,6 +63,7 @@ case $field in
   vermagic)          echo "${FAKE_VERMAGIC:-$KREL} SMP preempt mod_unload modversions" ;;
   livepatch)         echo "${FAKE_LIVEPATCH-Y}" ;;
   livepatch_replace) echo "${FAKE_REPLACE:-Y}" ;;
+  signer)            echo "${FAKE_SIGNER-pve-livepatch module signing key}" ;;
 esac'
 }
 

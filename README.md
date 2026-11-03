@@ -55,6 +55,7 @@ Get the token from <https://ubuntu.com/pro/dashboard>. Canonical Livepatch only 
 | `build <patch\|URL>` | Dry-runs the patch, runs `kpatch-build`, signs the module with the MOK key when present |
 | `apply <ko> [--persist]` | Checks vermagic, warns if other live patches would be replaced, loads it; `--persist` re-applies on boot via `kpatch.service` |
 | `status` / `remove <name>` | Show / unload live patches |
+| `mok setup\|status` | Secure Boot: create the module signing key and request enrollment; show enrollment state |
 | `canonical enable\|status\|disable` | Ubuntu only: Canonical Livepatch via Ubuntu Pro |
 
 Global options: `-y` (no prompts), `-j N` (build jobs).
@@ -64,7 +65,8 @@ Environment: `PLATFORM` (`pve`/`ubuntu`, auto-detected), `PVE_LIVEPATCH_DIR` (de
 
 - **Build cost.** The first build compiles the whole original kernel: plan for ~30 GB disk and 30–90 minutes. Build on a test host running the *identical* kernel and gcc, then copy the `.ko` to production and `apply` there.
 - **Atomic replace.** kpatch modules replace *all* previously loaded live patches by default, including Canonical's. Make each patch cumulative, or build with `--non-replace`. `apply` warns when this would happen.
-- **Secure Boot.** Modules are signed with the MOK key if found: PVE `/var/lib/dkms/mok.{key,pub}`, Ubuntu `/var/lib/shim-signed/mok/MOK.{priv,der}`. The key must be enrolled.
+- **Secure Boot.** Live-patch modules must be signed with a key the firmware trusts. Run `sudo pve-livepatch mok setup` once: it creates the key (PVE `/var/lib/dkms/mok.{key,pub}`, Ubuntu `/var/lib/shim-signed/mok/MOK.{priv,der}`) and requests enrollment. Enrolling needs **one** reboot to confirm the key in the blue MOK Manager screen; after that, live patches load without rebooting. Copy the same key pair to your other nodes and run `mok setup` there too, so one signed module works everywhere. `check` and `mok status` show whether the key is enrolled, and `apply` refuses unsigned modules on Secure Boot hosts.
+- **Disk space.** If the default `/var/lib/pve-livepatch` is too small, point the work directory at a bigger disk: `export PVE_LIVEPATCH_DIR=/mnt/pve/<storage>/pve-livepatch`.
 - **The patch must apply to your kernel.** Upstream fixes may need a backport to the PVE/Ubuntu tree; `build` stops if the dry run fails.
 - **Not everything can be live patched.** Data-structure layout changes, `__init` code and out-of-tree modules (such as ZFS on PVE) can't. kpatch-build refuses those.
 - **It's a bridge, not a replacement.** Still install the real kernel update and reboot later. On a PVE cluster, live-migrate guests off each node first so VMs see no downtime.
@@ -83,6 +85,7 @@ bats tests/
 | `cli.bats` | help/version, argument errors, PVE vs Ubuntu detection, MOK paths |
 | `check.bats` | every readiness check: config options, sysfs, gcc mismatch, Secure Boot |
 | `build.bats` | kpatch-build arguments, name sanitising, URL patches, dry-run, signing |
+| `mok.bats` | Secure Boot key creation, permissions, enrollment states, no overwriting |
 | `apply.bats` | vermagic/livepatch checks, confirm prompt, `--persist`, atomic-replace warning, status/remove |
 | `source.bats` | exact pve-kernel commit lookup, kernelrelease check, Canonical Livepatch |
 | `package.bats` | the released `.deb`: name, metadata, contents, ownership, version stamp |
