@@ -70,6 +70,9 @@ rm -rf "$meta"
 echo "kernel package version: ${pkgver}"
 
 # --- 2. toolchain (+ kpatch) and compiler match ------------------------------------
+# this container is plain Debian: tell pve-livepatch which kernel/platform it builds for
+export KREL=$KERNEL KCONFIG=$config PLATFORM=pve PVE_KERNEL_PKGVER=$pkgver
+
 log "Installing build toolchain and kpatch"
 "$LP" -y setup
 
@@ -83,7 +86,6 @@ if [[ $want != "$have" ]]; then
 fi
 
 # --- 3. source + build ---------------------------------------------------------------
-export KREL=$KERNEL KCONFIG=$config PLATFORM=pve PVE_KERNEL_PKGVER=$pkgver
 mode=(); [[ $FULL == true ]] && mode=(--full)
 
 log "Preparing Proxmox kernel source"
