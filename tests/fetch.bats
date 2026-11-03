@@ -139,6 +139,19 @@ cp "$f" "$out"'
   assert_output_contains "fetch <release-tag>"
 }
 
+@test "full setup installs everything kpatch-build needs (incl. gawk)" {
+  stub apt-get 'log_call apt-get "$@"'
+  stub git 'log_call git "$@"; [[ $1 == clone ]] && mkdir -p "$4/.git"; exit 0'
+  stub make 'log_call make "$@"'
+  run lp setup
+  assert_success
+  local inst; inst=$(grep '^apt-get install' "$STUB_LOG")
+  for pkg in build-essential gawk patch bison flex libelf-dev libssl-dev dwarves rsync; do
+    [[ " $inst " == *" $pkg "* ]] || { echo "missing $pkg in: $inst"; return 1; }
+  done
+  assert_called "make -C $PVE_LIVEPATCH_DIR/kpatch install"
+}
+
 @test "setup rejects unknown options" {
   run lp setup --tiny
   assert_failure

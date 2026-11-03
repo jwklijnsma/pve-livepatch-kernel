@@ -33,7 +33,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.4.0"
+readonly SCRIPT_VERSION="1.4.1"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -230,7 +230,7 @@ cmd_setup() {
   fi
   log "Installing build dependencies"
   apt-get install -y --no-install-recommends \
-    git build-essential bc bison flex cpio rsync kmod curl ca-certificates \
+    git build-essential bc bison flex cpio rsync kmod curl ca-certificates gawk patch \
     libelf-dev libdw-dev elfutils libssl-dev dwarves python3 zstd pkg-config \
     mokutil dpkg-dev
 
