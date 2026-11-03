@@ -26,8 +26,23 @@ mkdir -p "$PVE_LIVEPATCH_DIR" "$DIST_DIR"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-# keep kpatch's own log for the workflow, success or not
-trap 'cp -f "${HOME:-/root}/.kpatch/build.log" "$DIST_DIR/kpatch-build-internal.log" 2>/dev/null || true' EXIT
+# keep kpatch's own log for the workflow, and show the important part on failure
+on_exit() {
+  local rc=$? klog="${HOME:-/root}/.kpatch/build.log"
+  cp -f "$klog" "$DIST_DIR/kpatch-build-internal.log" 2>/dev/null || true
+  if (( rc != 0 )); then
+    for f in "$klog" "$PVE_LIVEPATCH_DIR"/out/*/vmlinux-build.log; do
+      [[ -s $f ]] || continue
+      echo "::group::errors in $f"
+      grep -nE 'error|Error|ERROR|\*\*\*|undefined reference|No such file' "$f" | tail -n 40 || true
+      echo "::endgroup::"
+      echo "::group::last 80 lines of $f"
+      tail -n 80 "$f"
+      echo "::endgroup::"
+    done
+  fi
+}
+trap on_exit EXIT
 
 [[ $KERNEL =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || die "kernel must look like 7.0.14-26-pve (got '$KERNEL')"
 [[ $NAME =~ ^[A-Za-z0-9_]{1,40}$ ]] || die "name must be letters, digits or _ (max 40), got '$NAME'"
