@@ -31,7 +31,7 @@ jobs:
 
       - name: Tests (a failing test blocks the release)
         run: |
-          sudo apt-get update -qq && sudo apt-get install -y bats
+          sudo apt-get update -qq && sudo apt-get install -y bats rsync
           bats --print-output-on-failure tests/
 
       - name: Determine version

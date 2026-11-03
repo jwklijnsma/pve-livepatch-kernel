@@ -20,14 +20,16 @@
 # Notes:
 #   * Run as root (or on a test host running the IDENTICAL kernel and gcc —
 #     strongly recommended; build there, apply in production later).
-#   * First build compiles the full original kernel: ~30 GB disk, 30–90 min.
+#   * Small mode (default): shallow source download and only vmlinux is built,
+#     ~8 GB disk, 15–45 min. --full also builds all modules (for fixes in
+#     module code): ~30 GB disk, 30–90 min.
 #   * kpatch builds "atomic replace" patches by default: loading a new patch
 #     REPLACES all previously loaded live patches (including Canonical's!),
 #     so make each patch cumulative — or pass --non-replace.
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.2.0"
+readonly SCRIPT_VERSION="1.3.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -40,6 +42,7 @@ readonly PROC_VERSION="${PROC_VERSION:-/proc/version}"
 readonly OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
 JOBS="${JOBS:-$(nproc)}"
 ASSUME_YES=0
+FULL=0            # 1 = full-history source + build vmlinux AND modules
 
 # ----------------------------------------------------------------------------- helpers
 if [[ -t 1 ]]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[34m'; C_0=$'\e[0m'
@@ -61,6 +64,8 @@ confirm() {
 
 cfg_val() { grep -E "^$1=" "$KCONFIG" 2>/dev/null | cut -d= -f2- || true; }
 src_dir() { echo "${WORKDIR}/src/${KREL}"; }
+build_mode()  { (( FULL )) && echo full || echo small; }
+disk_needed() { (( FULL )) && echo 30 || echo 8; }
 
 secure_boot_on() {
   command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'
@@ -164,8 +169,9 @@ cmd_check() {
   local dpath=$WORKDIR disk
   while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
   disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
-  if (( disk >= 30 )); then ok "${disk}G free for ${WORKDIR}"
-  else warn "only ${disk}G free on ${dpath} — build needs ~30G; set PVE_LIVEPATCH_DIR to a larger disk (or build on another node with the same kernel)"
+  local need; need=$(disk_needed)
+  if (( disk >= need )); then ok "${disk}G free for ${WORKDIR} ($(build_mode) build needs ~${need}G)"
+  else warn "only ${disk}G free on ${dpath} — $(build_mode) build needs ~${need}G; set PVE_LIVEPATCH_DIR to a larger disk, or run '$0 clean' to free space"
   fi
 
   command -v kpatch-build >/dev/null 2>&1 && ok "kpatch-build installed" || warn "kpatch not installed (run: $0 setup)"
@@ -201,6 +207,14 @@ cmd_setup() {
 }
 
 # ----------------------------------------------------------------------------- source
+disk_preflight() {
+  local dpath=$WORKDIR disk need
+  while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
+  disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
+  need=$(disk_needed)
+  (( disk >= need )) || warn "only ${disk}G free on ${dpath}; $(build_mode) build needs ~${need}G"
+}
+
 running_kernel_pkg() {
   local pkg
   pkg=$(dpkg -S "/boot/vmlinuz-${KREL}" 2>/dev/null | cut -d: -f1 | head -1)
@@ -252,13 +266,28 @@ source_pve() {
   ok "pve-kernel commit ${commit:0:12}"
 
   git -C "$repo" checkout --quiet -f --detach "$commit"
-  log "Fetching ubuntu-kernel submodule (large, first time takes a while)"
-  git -C "$repo" submodule update --init --quiet submodules/ubuntu-kernel
+  local sub=submodules/ubuntu-kernel
+  if (( FULL )); then
+    log "Fetching ubuntu-kernel submodule with full history (large, first time takes a while)"
+    git -C "$repo" submodule update --init --quiet "$sub"
+  else
+    log "Fetching ubuntu-kernel submodule (only the needed commit)"
+    git -C "$repo" submodule update --init --depth 1 --quiet "$sub" || {
+      warn "server refused a shallow fetch — falling back to full history"
+      git -C "$repo" submodule update --init --quiet "$sub"
+    }
+  fi
 
   src=$(src_dir)
   log "Preparing source tree in ${src}"
   rm -rf "$src"; mkdir -p "$src"
-  rsync -a --exclude=.git "$repo/submodules/ubuntu-kernel/" "$src/"
+  rsync -a --exclude=.git "$repo/$sub/" "$src/"
+  if (( ! FULL )); then
+    # the copy in $src is all we need: drop the checkout and its objects
+    git -C "$repo" submodule deinit -f --quiet "$sub"
+    rm -rf "$repo/.git/modules/$sub"
+    ok "removed submodule checkout to save space"
+  fi
 
   shopt -s nullglob
   for p in "$repo"/patches/kernel/*.patch; do
@@ -311,12 +340,20 @@ source_ubuntu() {
   log "Preparing source tree in ${src}"
   rm -rf "$src"; mkdir -p "$src"
   rsync -a --exclude=.git "$dir/" "$src/"
+  rm -rf "$dl"
   ok "Ubuntu source ready (Ubuntu patches are already part of the tree)"
   finalise_tree "$src"
 }
 
 cmd_source() {
   need_root; need_cmd rsync
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --full) FULL=1; shift ;;
+      *)      die "unknown source option: $1" ;;
+    esac
+  done
+  disk_preflight
   case $PLATFORM in
     pve)    need_cmd git; source_pve ;;
     ubuntu) source_ubuntu ;;
@@ -331,6 +368,7 @@ cmd_build() {
     case $1 in
       -n|--name)     name=$2; shift 2 ;;
       --non-replace) extra+=(--non-replace); shift ;;
+      --full)        FULL=1; shift ;;
       -*)            die "unknown build option: $1" ;;
       *)             patch=$1; shift ;;
     esac
@@ -356,10 +394,19 @@ cmd_build() {
 
   [[ -n $name ]] || name=$(basename "$patch" .patch)
   name=$(echo "$name" | tr -c 'A-Za-z0-9_\n' '_' | cut -c1-40)
-  log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}); first run builds the whole kernel"
+  (( FULL )) || extra+=(-t vmlinux)
+  disk_preflight
+  log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}, $(build_mode): $( (( FULL )) && echo 'vmlinux + modules' || echo 'vmlinux only'))"
+  log "first run compiles the original kernel, later runs only what the patch changes"
 
-  ( cd "$WORKDIR/out/$KREL" && \
-    kpatch-build -s "$src" -c "$KCONFIG" -j "$JOBS" -n "$name" "${extra[@]}" "$patch" )
+  local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
+  if ! ( cd "$WORKDIR/out/$KREL" && \
+         kpatch-build -s "$src" -c "$KCONFIG" -j "$JOBS" -n "$name" "${extra[@]}" "$patch" ) 2>&1 | tee "$blog"; then
+    if (( ! FULL )) && grep -q 'no changed objects found' "$blog"; then
+      die "the patch only changes code in kernel modules, which small mode does not build — rerun with: $0 build ${patch} --name ${name} --full  (needs ~30G)"
+    fi
+    die "kpatch-build failed — see ${blog} and ~/.kpatch/build.log"
+  fi
 
   local ko="$WORKDIR/out/$KREL/livepatch-${name}.ko"
   [[ -f $ko ]] || ko=$(ls -t "$WORKDIR/out/$KREL"/*.ko 2>/dev/null | head -1)
@@ -372,6 +419,24 @@ cmd_build() {
   fi
   ok "built: ${ko}"
   echo "$ko"
+}
+
+# ----------------------------------------------------------------------------- clean
+cmd_clean() {
+  need_root
+  local d targets=() size
+  for d in "$WORKDIR/src" "$WORKDIR/ubuntu-src" "$WORKDIR/pve-kernel" "${HOME:-/root}/.kpatch"; do
+    [[ -e $d ]] && targets+=("$d")
+  done
+  if (( ${#targets[@]} == 0 )); then ok "nothing to clean"; return 0; fi
+  size=$(du -sch "${targets[@]}" 2>/dev/null | tail -1 | cut -f1)
+  log "Will delete kernel sources and build trees (${size}):"
+  printf '    %s\n' "${targets[@]}"
+  echo "  Kept: built modules in ${WORKDIR}/out, downloaded patches, kpatch itself."
+  echo "  The next build needs '$0 source' again and recompiles the kernel."
+  confirm "Delete them?" || die "aborted"
+  rm -rf "${targets[@]}"
+  ok "freed ${size}"
 }
 
 # ----------------------------------------------------------------------------- apply
@@ -531,6 +596,7 @@ cmd_all() {
   local ko
   cmd_check
   command -v kpatch-build >/dev/null 2>&1 || cmd_setup
+  local a; for a in "$@"; do [[ $a == --full ]] && FULL=1; done
   [[ -f $(src_dir)/Makefile ]] || cmd_source
   ko=$(cmd_build "$@" | tail -1)
   cmd_apply "$ko" --persist
@@ -544,12 +610,13 @@ Usage: $0 [-y] [-j N] <command> [args]
 
   check                               verify the kernel/host can be live patched
   setup                               install deps and kpatch/kpatch-build
-  source                              fetch + prepare the exact kernel source for ${KREL}
-  build <file.patch|URL> [--name N] [--non-replace]
+  source [--full]                     fetch + prepare the exact kernel source for ${KREL}
+  build <file.patch|URL> [--name N] [--non-replace] [--full]
                                       build livepatch-N.ko from a kernel source patch
   apply <livepatch-*.ko> [--persist]  load into running kernel (persist = reapply on boot)
   status                              show loaded live patches
   remove <name>                       unload a live patch
+  clean                               delete kernel sources/build trees to free disk
   all <file.patch|URL> [--name N]     check → setup → source → build → apply --persist
   mok setup|status                    Secure Boot: create + enroll the module signing key
   canonical enable|status|disable     (Ubuntu) Canonical Livepatch via Ubuntu Pro
@@ -557,6 +624,8 @@ Usage: $0 [-y] [-j N] <command> [args]
 Options:
   -y        don't ask for confirmation
   -j N      parallel build jobs (default: nproc = ${JOBS})
+  --full    full source history and build vmlinux + modules (~30G disk);
+            default is small mode: shallow source, vmlinux only (~8G disk)
 
 Env: PLATFORM (pve|ubuntu, auto-detected), PVE_LIVEPATCH_DIR (${WORKDIR}),
      PVE_COMMIT, KPATCH_REF, MOK_KEY, MOK_CERT, UBUNTU_PRO_TOKEN
@@ -577,6 +646,7 @@ main() {
     case $1 in
       -y|--yes) ASSUME_YES=1; shift ;;
       -j)       JOBS=$2; shift 2 ;;
+      --full)   FULL=1; shift ;;
       -h|--help) usage; exit 0 ;;
       -V|--version) echo "$SCRIPT_VERSION"; exit 0 ;;
       *) break ;;
@@ -591,11 +661,12 @@ main() {
   case $cmd in
     check)     cmd_check ;;
     setup)     cmd_setup ;;
-    source)    cmd_source ;;
+    source)    cmd_source "$@" ;;
     build)     cmd_build "$@" ;;
     apply)     cmd_apply "$@" ;;
     status)    cmd_status ;;
     remove)    cmd_remove "$@" ;;
+    clean)     cmd_clean ;;
     mok)       cmd_mok "$@" ;;
     canonical) cmd_canonical "$@" ;;
     all)       cmd_all "$@" ;;

@@ -102,12 +102,30 @@ setup() { setup_fake_host pve; }
   assert_output_contains "mok setup"
 }
 
-@test "low disk space suggests PVE_LIVEPATCH_DIR" {
+@test "12G is enough for a small (default) build" {
   stub df 'echo "Avail"; echo " 12G"'
   run lp check
   assert_success
-  assert_output_contains "only 12G free"
+  assert_output_contains "12G free"
+  assert_output_contains "small build needs ~8G"
+  refute_output_contains "only 12G"
+}
+
+@test "low disk space suggests PVE_LIVEPATCH_DIR and clean" {
+  stub df 'echo "Avail"; echo " 5G"'
+  run lp check
+  assert_success
+  assert_output_contains "only 5G free"
   assert_output_contains "set PVE_LIVEPATCH_DIR"
+  assert_output_contains "clean"
+}
+
+@test "--full raises the disk requirement to ~30G" {
+  stub df 'echo "Avail"; echo " 12G"'
+  run lp --full check
+  assert_success
+  assert_output_contains "only 12G free"
+  assert_output_contains "full build needs ~30G"
 }
 
 @test "disk check works when PVE_LIVEPATCH_DIR does not exist yet" {

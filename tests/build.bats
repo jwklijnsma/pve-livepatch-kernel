@@ -31,16 +31,58 @@ EOF
   [[ ${lines[-1]} == "$ko" ]]
 }
 
-@test "passes source dir, config, jobs and name to kpatch-build" {
+@test "small mode (default): builds vmlinux only" {
   run lp -j 3 build "$PATCH" --name fix1
   assert_success
+  assert_called "kpatch-build -s $SRC -c $KCONFIG -j 3 -n fix1 -t vmlinux $PATCH"
+  assert_output_contains "vmlinux only"
+}
+
+@test "build --full builds vmlinux and modules (no -t)" {
+  run lp -j 3 build "$PATCH" --name fix1 --full
+  assert_success
   assert_called "kpatch-build -s $SRC -c $KCONFIG -j 3 -n fix1 $PATCH"
+  assert_output_contains "vmlinux + modules"
+}
+
+@test "global --full works too" {
+  run lp --full build "$PATCH" --name fix1
+  assert_success
+  refute_called_match -- "-t vmlinux"
+}
+
+@test "module-only patch in small mode explains how to rebuild with --full" {
+  stub kpatch-build 'log_call kpatch-build "$@"; echo "ERROR: no changed objects found. Check /root/.kpatch/build.log for more details." >&2; exit 1'
+  run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "only changes code in kernel modules"
+  assert_output_contains "--name fix1 --full"
+}
+
+@test "other kpatch-build failures point at the build log" {
+  FAKE_KPATCH_BUILD_FAIL=1 run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "kpatch-build failed — see $PVE_LIVEPATCH_DIR/out/$KREL/kpatch-build-fix1.log"
+  refute_output_contains "only changes code in kernel modules"
+}
+
+@test "kpatch-build output is kept in a log file" {
+  run lp build "$PATCH" --name fix1
+  assert_success
+  [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/kpatch-build-fix1.log" ]]
+}
+
+@test "warns before building when disk is short" {
+  stub df 'echo "Avail"; echo " 5G"'
+  run lp build "$PATCH" --name fix1
+  assert_success
+  assert_output_contains "only 5G free"
 }
 
 @test "--non-replace is passed through" {
   run lp build "$PATCH" --name fix1 --non-replace
   assert_success
-  grep -q -- '-n fix1 --non-replace' "$STUB_LOG"
+  grep -q -- '-n fix1 --non-replace -t vmlinux' "$STUB_LOG"
 }
 
 @test "module name defaults to the patch file name, sanitised" {
