@@ -42,7 +42,10 @@ build() { "$REPO_ROOT/packaging/build-deb.sh" "$@"; }
   [[ $(dpkg-deb -f "$deb" Version) == 2.3.4 ]]
   [[ $(dpkg-deb -f "$deb" Architecture) == all ]]
   [[ $(dpkg-deb -f "$deb" Depends) == *kmod* ]]
-  [[ $(dpkg-deb -f "$deb" Recommends) == *libelf-dev* ]]
+  [[ $(dpkg-deb -f "$deb" Depends) == *openssl* ]]
+  # build toolchain must not be pulled in on small nodes (apt installs Recommends)
+  [[ $(dpkg-deb -f "$deb" Recommends) != *build-essential* ]]
+  [[ $(dpkg-deb -f "$deb" Suggests) == *libelf-dev* ]]
 }
 
 @test "installs an executable /usr/sbin/pve-livepatch with the release version" {

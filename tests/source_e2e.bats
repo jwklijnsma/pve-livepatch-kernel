@@ -94,6 +94,16 @@ P
   assert_output_contains "PVE patch failed: 0001-proxmox-tweak.patch"
 }
 
+@test "PVE_KERNEL_PKGVER builds for a kernel that is not installed (CI)" {
+  pve_fixture
+  stub dpkg 'echo "dpkg should not be called" >&2; exit 1'
+  stub dpkg-query 'echo "dpkg-query should not be called" >&2; exit 1'
+  PVE_KERNEL_PKGVER=6.8.12-4 run lp source
+  assert_success
+  assert_output_contains "Kernel package: proxmox-kernel-$KREL 6.8.12-4"
+  grep -q 'return 42' "$PVE_LIVEPATCH_DIR/src/$KREL/kernel/answer.c"
+}
+
 @test "unknown source option fails" {
   setup_fake_host pve
   run lp source --bogus

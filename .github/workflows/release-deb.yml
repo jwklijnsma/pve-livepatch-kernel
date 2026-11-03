@@ -26,7 +26,7 @@ jobs:
 
       - name: Lint
         run: |
-          shellcheck -S warning pve-livepatch.sh packaging/build-deb.sh
+          shellcheck -S warning pve-livepatch.sh packaging/build-deb.sh ci/build-livepatch.sh
           bash -n pve-livepatch.sh
 
       - name: Tests (a failing test blocks the release)

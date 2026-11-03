@@ -145,14 +145,12 @@ cp "$FAKE_PATCH" "$out"'
   assert_failure
 }
 
-@test "signs the module when a MOK key and sign-file exist" {
-  mkdir -p "$SRC/scripts"
-  printf '#!/bin/sh\necho "sign-file $*" >> "$STUB_LOG"\n' > "$SRC/scripts/sign-file"
-  chmod +x "$SRC/scripts/sign-file"
-  touch "$BATS_TEST_TMPDIR/k" "$BATS_TEST_TMPDIR/c"
-  MOK_KEY="$BATS_TEST_TMPDIR/k" MOK_CERT="$BATS_TEST_TMPDIR/c" run lp build "$PATCH" --name fix1
+@test "signs the built module with the MOK key (built-in signer)" {
+  make_test_key
+  run lp build "$PATCH" --name fix1
   assert_success
-  assert_called "sign-file sha512 $BATS_TEST_TMPDIR/k $BATS_TEST_TMPDIR/c $PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko"
+  assert_output_contains "signed livepatch-fix1.ko"
+  [[ $(tail -c 28 "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko") == "~Module signature appended~"* ]]
 }
 
 @test "warns when Secure Boot is on but nothing can sign" {

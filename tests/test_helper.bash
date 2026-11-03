@@ -111,3 +111,10 @@ assert_output_contains() { [[ $output == *"$1"* ]] || { echo "output does not co
 refute_output_contains() { [[ $output != *"$1"* ]] || { echo "output unexpectedly contains: $1"; echo "---"; echo "$output"; return 1; }; }
 assert_called() { grep -qxF -- "$1" "$STUB_LOG" || { echo "not called: $1"; echo "--- calls:"; cat "$STUB_LOG"; return 1; }; }
 refute_called_match() { ! grep -q -- "$1" "$STUB_LOG" || { echo "unexpected call matching: $1"; cat "$STUB_LOG"; return 1; }; }
+
+# real throw-away MOK key pair (DER cert, like PVE's /var/lib/dkms/mok.pub)
+make_test_key() {
+  export MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub"
+  openssl req -new -x509 -nodes -days 30 -newkey rsa:2048 -subj "/CN=bats test key/" \
+    -keyout "$MOK_KEY" -outform DER -out "$MOK_CERT" >/dev/null 2>&1
+}

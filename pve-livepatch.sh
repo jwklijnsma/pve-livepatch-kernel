@@ -14,6 +14,10 @@
 #   4. build    – turn a source .patch (file or URL) into livepatch-<name>.ko
 #   5. apply    – load the module into the running kernel (optionally persist)
 #
+# Small nodes (like Ubuntu Pro): build in GitHub Actions, then on the node
+#   setup --minimal  – only what loading needs (kpatch, openssl, mokutil)
+#   fetch <tag>      – download a CI-built module, verify sha256 + kernel, sign
+#
 # Ubuntu only (official fixes, no build needed):
 #   canonical enable|status|disable – Canonical Livepatch via Ubuntu Pro
 #
@@ -29,11 +33,12 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.3.0"
+readonly SCRIPT_VERSION="1.4.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
 readonly KPATCH_REF="${KPATCH_REF:-master}"
+readonly RELEASE_REPO="${PVE_LIVEPATCH_REPO:-jwklijnsma/pve-livepatch-kernel}"   # where `fetch` downloads from
 # paths are overridable so the test suite can point them at fixtures
 KREL="${KREL:-$(uname -r)}"; readonly KREL
 readonly KCONFIG="${KCONFIG:-/boot/config-${KREL}}"
@@ -142,11 +147,17 @@ cmd_check() {
   [[ -d $SYSFS_LP ]] && ok "${SYSFS_LP} present" \
     || { bad "${SYSFS_LP} missing"; fail=1; }
 
+  # build host (kpatch-build present) or small node that only fetches modules
+  local build_host=1
+  command -v kpatch-build >/dev/null 2>&1 || build_host=0
+
   # compiler must match the one that built the running kernel
   local kgcc lgcc
   kgcc=$(sed -n 's/.*(gcc[^)]*) \([0-9][0-9.]*\).*/\1/p' "$PROC_VERSION")
   lgcc=$(gcc -dumpfullversion 2>/dev/null || echo "none")
-  if [[ -n $kgcc && $kgcc == "$lgcc" ]]; then ok "gcc ${lgcc} matches kernel build compiler"
+  if (( ! build_host )); then
+    ok "fetch mode: no local build toolchain needed (kernel was built with gcc ${kgcc:-?})"
+  elif [[ -n $kgcc && $kgcc == "$lgcc" ]]; then ok "gcc ${lgcc} matches kernel build compiler"
   else bad "gcc mismatch: kernel built with '${kgcc:-?}', local gcc is '${lgcc}'"; fail=1; fi
 
   # secure boot / module signing
@@ -166,32 +177,25 @@ cmd_check() {
     warn "Canonical Livepatch is installed — kpatch atomic-replace patches would replace its fixes"
   fi
 
-  local dpath=$WORKDIR disk
-  while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
-  disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
-  local need; need=$(disk_needed)
-  if (( disk >= need )); then ok "${disk}G free for ${WORKDIR} ($(build_mode) build needs ~${need}G)"
-  else warn "only ${disk}G free on ${dpath} — $(build_mode) build needs ~${need}G; set PVE_LIVEPATCH_DIR to a larger disk, or run '$0 clean' to free space"
+  if (( build_host )); then
+    local dpath=$WORKDIR disk
+    while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
+    disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
+    local need; need=$(disk_needed)
+    if (( disk >= need )); then ok "${disk}G free for ${WORKDIR} ($(build_mode) build needs ~${need}G)"
+    else warn "only ${disk}G free on ${dpath} — $(build_mode) build needs ~${need}G; use 'fetch' (CI-built modules), set PVE_LIVEPATCH_DIR to a larger disk, or run '$0 clean'"
+    fi
+    ok "kpatch-build installed (local builds possible)"
   fi
-
-  command -v kpatch-build >/dev/null 2>&1 && ok "kpatch-build installed" || warn "kpatch not installed (run: $0 setup)"
+  if command -v kpatch >/dev/null 2>&1; then ok "kpatch installed (can load patches)"
+  else bad "kpatch not installed — run: $0 setup --minimal"; fail=1; fi
 
   cmd_status || true
   (( fail == 0 )) && log "${C_G}Ready.${C_0}" || die "host is not ready for live patching (see above)"
 }
 
 # ----------------------------------------------------------------------------- setup
-cmd_setup() {
-  need_root
-  log "Installing build dependencies"
-  export DEBIAN_FRONTEND=noninteractive
-  apt-get update -qq
-  apt-get install -y --no-install-recommends \
-    git build-essential bc bison flex cpio rsync kmod curl ca-certificates \
-    libelf-dev libdw-dev elfutils libssl-dev dwarves python3 zstd pkg-config \
-    mokutil dpkg-dev
-
-  log "Building kpatch (${KPATCH_REF}) from ${KPATCH_REPO}"
+kpatch_checkout() {
   mkdir -p "$WORKDIR"
   if [[ -d $WORKDIR/kpatch/.git ]]; then
     git -C "$WORKDIR/kpatch" fetch --quiet origin
@@ -200,6 +204,38 @@ cmd_setup() {
   fi
   git -C "$WORKDIR/kpatch" checkout --quiet "$KPATCH_REF"
   git -C "$WORKDIR/kpatch" pull --quiet --ff-only 2>/dev/null || true
+}
+
+cmd_setup() {
+  need_root
+  local minimal=0
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --minimal) minimal=1; shift ;;
+      *)         die "unknown setup option: $1" ;;
+    esac
+  done
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -qq
+  if (( minimal )); then
+    log "Installing minimal dependencies (load + sign only, no build toolchain)"
+    apt-get install -y --no-install-recommends git make curl ca-certificates kmod openssl mokutil
+    kpatch_checkout
+    make -C "$WORKDIR/kpatch/kpatch" install
+    make -C "$WORKDIR/kpatch/contrib" install
+    systemctl daemon-reload || true
+    rm -rf "$WORKDIR/kpatch"
+    ok "kpatch loader installed — get modules with: $0 fetch <release-tag>"
+    return 0
+  fi
+  log "Installing build dependencies"
+  apt-get install -y --no-install-recommends \
+    git build-essential bc bison flex cpio rsync kmod curl ca-certificates \
+    libelf-dev libdw-dev elfutils libssl-dev dwarves python3 zstd pkg-config \
+    mokutil dpkg-dev
+
+  log "Building kpatch (${KPATCH_REF}) from ${KPATCH_REPO}"
+  kpatch_checkout
   make -C "$WORKDIR/kpatch" -j"$JOBS"
   make -C "$WORKDIR/kpatch" install
   systemctl daemon-reload || true
@@ -244,9 +280,13 @@ find_pve_commit() {
 
 source_pve() {
   local pkg pkgver repo commit src p n=0
-  pkg=$(running_kernel_pkg)
-  pkgver=$(dpkg-query -W -f='${Version}' "$pkg")
-  log "Running kernel package: ${pkg} ${pkgver}"
+  if [[ -n ${PVE_KERNEL_PKGVER:-} ]]; then      # CI: building for a kernel that isn't running here
+    pkg="proxmox-kernel-${KREL}"; pkgver=$PVE_KERNEL_PKGVER
+  else
+    pkg=$(running_kernel_pkg)
+    pkgver=$(dpkg-query -W -f='${Version}' "$pkg")
+  fi
+  log "Kernel package: ${pkg} ${pkgver}"
 
   repo="${WORKDIR}/pve-kernel"
   if [[ -d $repo/.git ]]; then
@@ -412,12 +452,103 @@ cmd_build() {
   [[ -f $ko ]] || ko=$(ls -t "$WORKDIR/out/$KREL"/*.ko 2>/dev/null | head -1)
   [[ -f $ko ]] || die "kpatch-build finished but no .ko found"
 
-  if [[ -r $MOK_KEY && -r $MOK_CERT && -x $src/scripts/sign-file ]]; then
-    "$src/scripts/sign-file" sha512 "$MOK_KEY" "$MOK_CERT" "$ko" && ok "signed with ${MOK_KEY}"
+  if [[ -r $MOK_KEY && -r $MOK_CERT ]]; then
+    sign_module "$ko"
   elif secure_boot_on; then
     warn "Secure Boot is on but module was NOT signed — it will not load"
   fi
   ok "built: ${ko}"
+  echo "$ko"
+}
+
+# ----------------------------------------------------------------------------- signing
+readonly SIG_MARKER='~Module signature appended~'
+
+is_signed() { [[ $(tail -c 28 "$1" | head -c 27) == "$SIG_MARKER" ]]; }
+
+# Append a kernel module signature using only openssl. Produces exactly what
+# the kernel's scripts/sign-file does (sha512, PKCS#7/CMS, no attributes,
+# issuer+serial signer id), so nodes need neither kernel headers nor sign-file.
+sign_module() {
+  local ko=$1 t len b
+  [[ -r $MOK_KEY && -r $MOK_CERT ]] || die "no MOK key at ${MOK_KEY} — run: $0 mok setup"
+  if is_signed "$ko"; then ok "$(basename "$ko") is already signed"; return 0; fi
+  t=$(mktemp -d)
+  # certificate may be DER (mok.pub, MOK.der) or PEM
+  openssl x509 -inform DER -in "$MOK_CERT" -out "$t/cert.pem" 2>/dev/null \
+    || openssl x509 -in "$MOK_CERT" -out "$t/cert.pem" 2>/dev/null \
+    || { rm -rf "$t"; die "cannot read certificate ${MOK_CERT}"; }
+  openssl cms -sign -binary -nocerts -noattr -nosmimecap -md sha512 \
+    -in "$ko" -inkey "$MOK_KEY" -signer "$t/cert.pem" -outform DER -out "$t/sig" \
+    || { rm -rf "$t"; die "openssl failed to sign $(basename "$ko")"; }
+  len=$(stat -c %s "$t/sig")
+  {
+    cat "$t/sig"
+    # struct module_signature: algo, hash, id_type=PKCS7(2), signer_len, key_id_len, pad[3]
+    printf '\000\000\002\000\000\000\000\000'
+    for b in 24 16 8 0; do                        # sig_len, big-endian u32
+      # shellcheck disable=SC2059
+      printf "\\$(printf %03o $(( (len >> b) & 255 )))"
+    done
+    printf '%s\n' "$SIG_MARKER"
+  } >> "$ko"
+  rm -rf "$t"
+  ok "signed $(basename "$ko") with ${MOK_CERT}"
+}
+
+# ----------------------------------------------------------------------------- fetch
+# Download a module that GitHub Actions built (see .github/workflows/build-livepatch.yml).
+# Release tags look like lp-<name>-<kernel>, assets livepatch-<name>-<kernel>.ko + SHA256SUMS.
+cmd_fetch() {
+  need_root; need_cmd curl
+  local ref=${1:-} name url sums="" asset out ko want have
+  [[ -n $ref ]] || die "usage: $0 fetch <release-tag|URL-to-.ko>"
+  out="$WORKDIR/out/$KREL"; mkdir -p "$out"
+
+  if [[ $ref =~ ^https?:// ]]; then
+    url=$ref
+    asset=$(basename "${url%%\?*}")
+    name=${asset%.ko}; name=${name#livepatch-}; name=${name%-"$KREL"}
+  else
+    [[ $ref == lp-* ]] || die "'${ref}' is not a live-patch release tag (expected lp-<name>-${KREL})"
+    [[ $ref == *-"$KREL" ]] || die "release '${ref}' was not built for this kernel (${KREL})"
+    name=${ref#lp-}; name=${name%-"$KREL"}
+    asset="livepatch-${name}-${KREL}.ko"
+    url="https://github.com/${RELEASE_REPO}/releases/download/${ref}/${asset}"
+    sums="https://github.com/${RELEASE_REPO}/releases/download/${ref}/SHA256SUMS"
+  fi
+  name=$(echo "$name" | tr -c 'A-Za-z0-9_\n' '_' | cut -c1-40)
+  ko="$out/livepatch-${name}.ko"
+
+  log "Downloading ${url}"
+  curl -fsSL "$url" -o "$ko.part" || { rm -f "$ko.part"; die "download failed: ${url}"; }
+  if [[ -n $sums ]]; then
+    curl -fsSL "$sums" -o "$out/SHA256SUMS.part" || { rm -f "$ko.part" "$out/SHA256SUMS.part"; die "could not download SHA256SUMS"; }
+    want=$(awk -v f="$asset" '{n=$2; sub(/^[*]/,"",n); sub(/^[.][/]/,"",n)} n==f {print $1}' "$out/SHA256SUMS.part")
+    rm -f "$out/SHA256SUMS.part"
+    [[ -n $want ]] || { rm -f "$ko.part"; die "SHA256SUMS has no entry for ${asset}"; }
+    have=$(sha256sum "$ko.part" | cut -d' ' -f1)
+    [[ $want == "$have" ]] || { rm -f "$ko.part"; die "checksum mismatch for ${asset} — not using it"; }
+    ok "sha256 verified"
+  else
+    warn "direct URL: no SHA256SUMS to verify against"
+  fi
+
+  local vm; vm=$(modinfo -F vermagic "$ko.part" 2>/dev/null | awk '{print $1}')
+  [[ $vm == "$KREL" ]] || { rm -f "$ko.part"; die "module is for kernel '${vm:-?}', running ${KREL}"; }
+  modinfo -F livepatch "$ko.part" 2>/dev/null | grep -qx Y || { rm -f "$ko.part"; die "${asset} is not a livepatch module"; }
+  mv -f "$ko.part" "$ko"
+  ok "module matches running kernel ${KREL}"
+
+  if [[ -r $MOK_KEY && -r $MOK_CERT ]]; then
+    sign_module "$ko"
+  elif secure_boot_on; then
+    die "Secure Boot is on but there is no signing key — run: $0 mok setup (module kept at ${ko})"
+  else
+    warn "no MOK key — module left unsigned (fine while Secure Boot is off)"
+  fi
+  ok "ready: ${ko}"
+  echo "  load it with: $0 apply ${ko} --persist" >&2
   echo "$ko"
 }
 
@@ -609,7 +740,9 @@ pve-livepatch ${SCRIPT_VERSION} — live patch the running kernel (${KREL}) on P
 Usage: $0 [-y] [-j N] <command> [args]
 
   check                               verify the kernel/host can be live patched
-  setup                               install deps and kpatch/kpatch-build
+  setup [--minimal]                   install deps and kpatch/kpatch-build
+                                      (--minimal: loader only, for nodes that use 'fetch')
+  fetch <release-tag|URL>             download a CI-built module, verify, sign (no build)
   source [--full]                     fetch + prepare the exact kernel source for ${KREL}
   build <file.patch|URL> [--name N] [--non-replace] [--full]
                                       build livepatch-N.ko from a kernel source patch
@@ -628,6 +761,7 @@ Options:
             default is small mode: shallow source, vmlinux only (~8G disk)
 
 Env: PLATFORM (pve|ubuntu, auto-detected), PVE_LIVEPATCH_DIR (${WORKDIR}),
+     PVE_LIVEPATCH_REPO (${RELEASE_REPO}, used by fetch),
      PVE_COMMIT, KPATCH_REF, MOK_KEY, MOK_CERT, UBUNTU_PRO_TOKEN
 
 Example:
@@ -660,7 +794,8 @@ main() {
   detect_platform
   case $cmd in
     check)     cmd_check ;;
-    setup)     cmd_setup ;;
+    setup)     cmd_setup "$@" ;;
+    fetch)     cmd_fetch "$@" ;;
     source)    cmd_source "$@" ;;
     build)     cmd_build "$@" ;;
     apply)     cmd_apply "$@" ;;

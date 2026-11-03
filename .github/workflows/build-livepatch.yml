@@ -1,0 +1,100 @@
+name: build live patch
+
+# Builds a live-patch module for a Proxmox VE kernel in GitHub's cloud, like
+# Ubuntu Pro / RHEL do centrally, so nodes only download ~1 MB:
+#   Actions → "build live patch" → Run workflow
+#   then on the node:  pve-livepatch fetch lp-<name>-<kernel>
+# Modules are published UNSIGNED; each node signs them with its own MOK key.
+on:
+  workflow_dispatch:
+    inputs:
+      kernel:
+        description: "Proxmox kernel (uname -r on the node), e.g. 7.0.14-26-pve"
+        required: true
+      patch:
+        description: "Kernel source patch: URL, or a path in this repo (e.g. patches/examples/proc-cmdline-demo.patch)"
+        required: true
+      name:
+        description: "Patch name: letters, digits, _ (e.g. cve_2026_1234)"
+        required: true
+      full:
+        description: "Also build modules (only needed for fixes in module code)"
+        type: boolean
+        default: false
+      dist:
+        description: "Proxmox/Debian release of the node (trixie = PVE 9, bookworm = PVE 8)"
+        default: trixie
+
+permissions:
+  contents: write
+
+concurrency:
+  group: livepatch-${{ inputs.name }}-${{ inputs.kernel }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    env:
+      KERNEL: ${{ inputs.kernel }}
+      PATCH:  ${{ inputs.patch }}
+      NAME:   ${{ inputs.name }}
+      FULL:   ${{ inputs.full }}
+      DIST:   ${{ inputs.dist }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Validate inputs
+        run: |
+          [[ $KERNEL =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || { echo "::error::kernel must look like 7.0.14-26-pve"; exit 1; }
+          [[ $NAME =~ ^[A-Za-z0-9_]{1,40}$ ]]                || { echo "::error::name: letters, digits, _ (max 40)"; exit 1; }
+          [[ $DIST =~ ^(trixie|bookworm)$ ]]                 || { echo "::error::dist must be trixie or bookworm"; exit 1; }
+          echo "TAG=lp-${NAME}-${KERNEL}" >> "$GITHUB_ENV"
+
+      - name: Free disk space on the runner
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
+                      /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
+          sudo docker image prune -af >/dev/null || true
+          df -h /
+
+      - name: Build in a Debian ${{ inputs.dist }} container
+        run: |
+          docker run --rm -v "$PWD:/w" -w /w -e PVE_LIVEPATCH_DIR=/w/_build \
+            "debian:${DIST}" bash ci/build-livepatch.sh "$KERNEL" "$PATCH" "$NAME" "$FULL" "$DIST"
+
+      - name: Keep build logs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: logs-${{ env.TAG }}
+          path: |
+            dist/*.log
+            _build/out/**/*.log
+          if-no-files-found: ignore
+
+      - name: Publish release ${{ env.TAG }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          sudo chown -R "$(id -u)" dist
+          cat > notes.md <<EOF
+          Live patch **${NAME}** for Proxmox kernel \`${KERNEL}\` (full build: ${FULL}, Debian ${DIST}).
+          The module is **unsigned**; your node signs it with its own MOK key.
+
+          On a node running \`${KERNEL}\`:
+          \`\`\`bash
+          pve-livepatch fetch ${TAG}
+          pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist
+          \`\`\`
+          EOF
+          assets=(dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/kpatch-build.log dist/SHA256SUMS)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" "${assets[@]}" --clobber
+          else
+            gh release create "$TAG" "${assets[@]}" --target "$GITHUB_SHA" \
+              --title "Live patch ${NAME} for ${KERNEL}" --notes-file notes.md --latest=false
+          fi
+          gh release view "$TAG" --json url --jq .url

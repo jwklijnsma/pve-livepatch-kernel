@@ -29,9 +29,9 @@ Section: admin
 Priority: optional
 Architecture: all
 Maintainer: Jan Wiebe Klijnsma <janwiebek@gmail.com>
-Depends: bash (>= 4.4), coreutils, kmod, dpkg, apt, sed, gawk | mawk, patch, rsync, curl, ca-certificates
-Recommends: git, build-essential, bc, bison, flex, cpio, libelf-dev, libdw-dev, elfutils, libssl-dev, dwarves, python3, zstd, pkg-config, mokutil, dpkg-dev
-Suggests: ubuntu-pro-client
+Depends: bash (>= 4.4), coreutils, kmod, dpkg, sed, gawk | mawk, curl, ca-certificates, openssl
+Recommends: mokutil, git, make
+Suggests: build-essential, bc, bison, flex, cpio, rsync, patch, libelf-dev, libdw-dev, elfutils, libssl-dev, dwarves, python3, zstd, pkg-config, dpkg-dev, ubuntu-pro-client
 Installed-Size: $(du -sk "$STAGE/usr" | cut -f1)
 Homepage: https://github.com/jwklijnsma/pve-livepatch-kernel
 Description: live patch the running kernel without reboot (Proxmox VE / Ubuntu)
@@ -40,7 +40,9 @@ Description: live patch the running kernel without reboot (Proxmox VE / Ubuntu)
  it with the MOK key and loads it without a reboot. On Ubuntu it can also
  enable Canonical Livepatch through Ubuntu Pro.
  .
- Run "pve-livepatch setup" once to install kpatch and the build toolchain.
+ Small nodes: "pve-livepatch setup --minimal", then "pve-livepatch fetch"
+ modules built by GitHub Actions. Build hosts: "pve-livepatch setup"
+ installs the kernel build toolchain.
 EOF
 
 # --- remove generated state on purge only (never touch it on upgrade)

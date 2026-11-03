@@ -9,6 +9,21 @@ Live patch the **running kernel without a reboot** on **Proxmox VE** and **Ubunt
 | Proxmox VE (`*-pve` kernels) | ✅ source from `pve-kernel` git + Proxmox patches | ❌ Proxmox does not ship any |
 | Ubuntu (`generic`, `lowlatency`, cloud flavours) | ✅ source from `apt-get source` | ✅ `canonical enable` (Ubuntu Pro) |
 
+## Small nodes: build in GitHub Actions (like Ubuntu Pro)
+
+Ubuntu Pro and RHEL build live patches centrally and nodes only download a small signed module. This repo can do the same for Proxmox kernels:
+
+1. **Build in the cloud.** Actions → **build live patch** → Run workflow, with the node's `uname -r` (e.g. `7.0.14-26-pve`), a patch (URL, or a path in this repo) and a name. GitHub's runner takes the exact kernel config and version from Proxmox's package repository, checks the compiler is the one Proxmox used, builds the module in a Debian container and publishes it as release `lp-<name>-<kernel>`.
+2. **On the node (a few MB, no compiler):**
+   ```bash
+   sudo pve-livepatch setup --minimal              # kpatch loader only
+   sudo pve-livepatch mok setup                    # once, if Secure Boot is on
+   sudo pve-livepatch fetch lp-<name>-<kernel>     # ~1 MB: sha256 + kernel check, then signs it
+   sudo pve-livepatch apply /var/lib/pve-livepatch/out/<kernel>/livepatch-<name>.ko --persist
+   ```
+
+Modules are published **unsigned** and each node signs them with its own MOK key, so your private key never leaves your nodes. Signing uses only `openssl` and produces exactly the same bytes as the kernel's `scripts/sign-file`. To try the whole flow safely, build `patches/examples/proc-cmdline-demo.patch`: it only appends ` kpatch_demo=1` to `/proc/cmdline`.
+
 ## Install
 
 From a release (`.deb`, installs `/usr/sbin/pve-livepatch`):
@@ -50,10 +65,11 @@ Get the token from <https://ubuntu.com/pro/dashboard>. Canonical Livepatch only 
 | Command | What it does |
 |---|---|
 | `check` | Checks `CONFIG_LIVEPATCH`, ftrace, reliable stacktrace, gcc match, Secure Boot/MOK, disk space, loaded patches |
-| `setup` | Installs build dependencies, builds and installs kpatch from GitHub |
+| `setup [--minimal]` | Installs build dependencies and kpatch; `--minimal` installs only the loader (for nodes that use `fetch`) |
 | `source` | **PVE:** finds the `bump version to <pkgver>` commit in pve-kernel, checks out the ubuntu-kernel submodule, applies `patches/kernel/*`. **Ubuntu:** enables `deb-src` if needed (asks first) and runs `apt-get source`. Both: sets `EXTRAVERSION` and verifies `make kernelrelease == uname -r` |
 | `build <patch\|URL>` | Dry-runs the patch, runs `kpatch-build`, signs the module with the MOK key when present |
 | `apply <ko> [--persist]` | Checks vermagic, warns if other live patches would be replaced, loads it; `--persist` re-applies on boot via `kpatch.service` |
+| `fetch <tag\|URL>` | Download a CI-built module (release `lp-<name>-<kernel>`), verify sha256 and kernel version, sign it locally |
 | `status` / `remove <name>` | Show / unload live patches |
 | `clean` | Delete kernel sources and build trees to free disk; keeps built modules |
 | `mok setup\|status` | Secure Boot: create the module signing key and request enrollment; show enrollment state |
@@ -89,6 +105,8 @@ bats tests/
 | `mok.bats` | Secure Boot key creation, permissions, enrollment states, no overwriting |
 | `source_e2e.bats` | `source` end to end on local git repos / fake apt: Proxmox patches, shallow vs full, cleanup |
 | `clean.bats` | freeing disk while keeping modules and patches |
+| `fetch.bats` | downloading CI-built modules: checksum, kernel and tag checks, signing, `setup --minimal`, fetch-only `check` |
+| `sign.bats` | built-in signer: kernel module signature format, sha512 CMS without attributes, PEM/DER certs |
 | `apply.bats` | vermagic/livepatch checks, confirm prompt, `--persist`, atomic-replace warning, status/remove |
 | `source.bats` | exact pve-kernel commit lookup, kernelrelease check, Canonical Livepatch |
 | `package.bats` | the released `.deb`: name, metadata, contents, ownership, version stamp |
