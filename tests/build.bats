@@ -43,6 +43,28 @@ EOF
   [[ $(grep -n '^make ' "$STUB_LOG" | cut -d: -f1) -lt $(grep -n '^kpatch-build ' "$STUB_LOG" | cut -d: -f1) ]]
 }
 
+@test "small mode seeds Module.symvers from vmlinux.symvers" {
+  echo "0x1 printk vmlinux EXPORT_SYMBOL" > "$SRC/vmlinux.symvers"
+  run lp build "$PATCH" --name fix1
+  assert_success
+  cmp -s "$SRC/vmlinux.symvers" "$SRC/Module.symvers"
+}
+
+@test "an existing Module.symvers is left alone" {
+  echo "vmlinux only" > "$SRC/vmlinux.symvers"
+  echo "full table"   > "$SRC/Module.symvers"
+  run lp build "$PATCH" --name fix1
+  assert_success
+  [[ $(cat "$SRC/Module.symvers") == "full table" ]]
+}
+
+@test "--full does not seed Module.symvers (make modules writes it)" {
+  echo "vmlinux only" > "$SRC/vmlinux.symvers"
+  run lp build "$PATCH" --name fix1 --full
+  assert_success
+  [[ ! -e $SRC/Module.symvers ]]
+}
+
 @test "does not recompile vmlinux when it is already there" {
   stub make 'log_call make "$@"'
   run lp build "$PATCH" --name fix1

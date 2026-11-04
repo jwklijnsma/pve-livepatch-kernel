@@ -33,7 +33,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.4.2"
+readonly SCRIPT_VERSION="1.4.3"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -460,6 +460,13 @@ cmd_build() {
       die "compiling the original vmlinux failed — see ${vlog}"
     fi
     ok "original vmlinux built"
+  fi
+  # kpatch-build copies Module.symvers after its build. A vmlinux-only build
+  # (small mode) only writes vmlinux.symvers; for a patch to built-in code the
+  # vmlinux exports are exactly what the patch module links against.
+  if (( ! FULL )) && [[ ! -f $src/Module.symvers && -f $src/vmlinux.symvers ]]; then
+    cp "$src/vmlinux.symvers" "$src/Module.symvers"
+    ok "Module.symvers seeded from vmlinux.symvers (small mode)"
   fi
 
   local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
