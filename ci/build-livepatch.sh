@@ -14,8 +14,9 @@
 # Output in dist/: livepatch-<name>-<kernel>.ko (signed), <name>.patch, build.log,
 #                  module-signing.der, SHA256SUMS (+ PATCHSET for a directory)
 #
-# Signing: MODULE_SIGNING_PEM (GitHub secret) holds the module signing private key
-# and its certificate, both PEM. Without it the build stops, unless ALLOW_UNSIGNED=1.
+# Signing (optional): MODULE_SIGNING_PEM (GitHub secret) holds a module signing private
+# key and its certificate, both PEM. Without it the module is built unsigned (it
+# then only loads on nodes with Secure Boot off).
 set -Eeuo pipefail
 
 KERNEL=${1:?kernel release required, e.g. 7.0.14-26-pve}
@@ -76,10 +77,8 @@ if [[ -n ${MODULE_SIGNING_PEM:-} ]]; then
     || die "the certificate in MODULE_SIGNING_PEM does not belong to its private key"
   export MOK_KEY="$SIGN_DIR/key.pem" MOK_CERT="$DIST_DIR/module-signing.der"
   echo "signing with: $(openssl x509 -inform DER -in "$MOK_CERT" -noout -subject)"
-elif [[ ${ALLOW_UNSIGNED:-0} == 1 ]]; then
-  echo "WARNING: building an UNSIGNED module (ALLOW_UNSIGNED=1) — it won't load with Secure Boot on"
 else
-  die "the MODULE_SIGNING_PEM secret is not set — add it in GitHub (Settings → Secrets and variables → Actions), see README"
+  echo "no MODULE_SIGNING_PEM secret: building an UNSIGNED module (loads only with Secure Boot off)"
 fi
 
 # --- 1. kernel package version + exact config from the Proxmox repository ----------

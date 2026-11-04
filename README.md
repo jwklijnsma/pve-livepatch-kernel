@@ -9,7 +9,7 @@ klp-build is part of the kernel from **6.19** on, and the kernel must be built w
 
 ## Set up once
 
-**1. Signing key → GitHub secret.** Run this on any computer with `openssl` and the [GitHub CLI](https://cli.github.com/):
+**1. (Optional) signing key → GitHub secret.** Without it, modules are built **unsigned** and load only on nodes with Secure Boot **off**. For Secure Boot nodes, run this on any computer with `openssl` and the [GitHub CLI](https://cli.github.com/):
 
 ```bash
 ./signing/new-signing-key.sh | gh secret set MODULE_SIGNING_PEM -R jwklijnsma/pve-livepatch-kernel

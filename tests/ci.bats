@@ -41,7 +41,6 @@ log_call gh "$@"
 [[ $1 == release && $2 == download ]] || exit 1
 f="$FAKE_RELEASES/$3/PATCHSET"; [[ -f $f ]] || exit 1; cat "$f"'
   export FAKE_RELEASES="$T/releases"; mkdir -p "$FAKE_RELEASES"
-  export ALLOW_UNSIGNED=1
 }
 
 signing_pem() {   # signing_pem <cn> : key + certificate, like the GitHub secret
@@ -105,10 +104,18 @@ patchset_id() { run discover; echo "$output" | grep -o 'auto_[0-9a-f]*' | head -
   grep -q '^+++ b/fs/proc/cmdline.c' "$REPO_ROOT"/patches/auto/0001-demo-proc-cmdline.patch
 }
 
-@test "without MODULE_SIGNING_PEM it stops with a clear error" {
-  ALLOW_UNSIGNED=0 run discover
-  assert_failure
-  assert_output_contains "MODULE_SIGNING_PEM secret is not set"
+@test "without MODULE_SIGNING_PEM it builds unsigned" {
+  KEEP=1 run discover
+  assert_success
+  assert_output_contains "modules will be unsigned"
+  [[ ${lines[-1]} == *'"kernel":"7.0.14-26-pve"'* ]]
+}
+
+@test "adding a signing key later rebuilds (new patch set id)" {
+  local a b
+  a=$(KEEP=1 patchset_id)
+  b=$(MODULE_SIGNING_PEM=$(signing_pem one) KEEP=1 patchset_id)
+  [[ -n $a && -n $b && $a != "$b" ]]
 }
 
 @test "a key without its certificate is rejected" {
@@ -132,6 +139,6 @@ patchset_id() { run discover; echo "$output" | grep -o 'auto_[0-9a-f]*' | head -
   printf '%s\n' "$pem" | openssl pkey -noout
   printf '%s\n' "$pem" | openssl x509 -noout
   [[ $(printf '%s\n' "$pem" | openssl pkey -pubout) == "$(printf '%s\n' "$pem" | openssl x509 -noout -pubkey)" ]]
-  MODULE_SIGNING_PEM=$pem ALLOW_UNSIGNED=0 run discover
+  MODULE_SIGNING_PEM=$pem run discover
   assert_success
 }

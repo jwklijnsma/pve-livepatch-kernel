@@ -14,7 +14,7 @@
 # Env: DIST (trixie), KEEP (2 newest kernels), KERNELS (explicit list, skips the
 #      repository lookup), FORCE (true = rebuild even if up to date),
 #      PATCH_DIR (patches/auto), PVE_REPO_BASE, GH_REPO (for `gh release`),
-#      MODULE_SIGNING_PEM (required unless ALLOW_UNSIGNED=1)
+#      MODULE_SIGNING_PEM (optional: without it modules are unsigned)
 set -Eeuo pipefail
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -42,11 +42,9 @@ if [[ -n ${MODULE_SIGNING_PEM:-} ]]; then
     || { note "MODULE_SIGNING_PEM has no certificate"; exit 1; }
   [[ $cert != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] \
     || { note "MODULE_SIGNING_PEM has no certificate (paste the key AND the certificate)"; exit 1; }
-elif [[ ${ALLOW_UNSIGNED:-0} == 1 ]]; then
-  cert=unsigned
 else
-  note "::error::the MODULE_SIGNING_PEM secret is not set — add it in GitHub (Settings → Secrets and variables → Actions), see README"
-  exit 1
+  note "no MODULE_SIGNING_PEM secret: modules will be unsigned"
+  cert=unsigned
 fi
 id=$( { for p in "${patches[@]}"; do printf '%s\n' "$(basename "$p")"; cat "$p"; done; echo "signing ${cert}"; } \
       | sha256sum | cut -c1-12)
