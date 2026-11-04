@@ -1,47 +1,49 @@
 #!/usr/bin/env bats
-# `mok setup|status`: Secure Boot module signing key.
+# `mok setup|status`: enroll the certificate GitHub signs modules with.
 
 load test_helper
 
 setup() {
   setup_fake_host pve
-  export MOK_KEY="$BATS_TEST_TMPDIR/keys/mok.key"
-  export MOK_CERT="$BATS_TEST_TMPDIR/keys/mok.pub"
-  stub openssl '
-log_call openssl "$@"
-while [[ $# -gt 0 ]]; do
-  case $1 in -keyout|-out) echo fake > "$2"; shift ;; esac; shift
-done'
+  export FAKE_WEB="$BATS_TEST_TMPDIR/web"
+  CERTDIR="$FAKE_WEB/github.com/jwklijnsma/pve-livepatch-kernel/releases/download/signing-cert"
+  mkdir -p "$CERTDIR"; echo "DER CERT" > "$CERTDIR/module-signing.der"
+  stub curl '
+out=""; url=""
+while [[ $# -gt 0 ]]; do case $1 in -o) out=$2; shift ;; -*) ;; *) url=$1 ;; esac; shift; done
+log_call curl "$url"
+f="$FAKE_WEB/${url#*://}"
+[[ -f $f ]] || { echo "curl: (22) The requested URL returned error: 404" >&2; exit 22; }
+cp "$f" "$out"'
+  CERT="$PVE_LIVEPATCH_DIR/module-signing.der"
 }
 
-@test "setup creates a key, then requests enrollment" {
+@test "setup downloads GitHub's certificate and requests enrollment" {
   FAKE_SB=enabled FAKE_MOK=no run lp mok setup
   assert_success
-  [[ -f $MOK_KEY && -f $MOK_CERT ]]
-  grep -q -- "-keyout $MOK_KEY -outform DER -out $MOK_CERT" "$STUB_LOG"
-  assert_called "mokutil --import $MOK_CERT"
+  assert_called "curl https://github.com/jwklijnsma/pve-livepatch-kernel/releases/download/signing-cert/module-signing.der"
+  [[ $(cat "$CERT") == "DER CERT" ]]
+  assert_called "mokutil --import $CERT"
   assert_output_contains "MOK management"
 }
 
-@test "setup creates the private key with mode 600 in a 700 directory" {
+@test "setup never creates a private key on the node" {
+  stub openssl 'log_call openssl "$@"'
   FAKE_MOK=no run lp mok setup
   assert_success
-  [[ $(stat -c %a "$MOK_KEY") == 600 ]]
-  [[ $(stat -c %a "$(dirname "$MOK_KEY")") == 700 ]]
-}
-
-@test "setup reuses an existing key and only enrolls" {
-  mkdir -p "$(dirname "$MOK_KEY")"; echo k > "$MOK_KEY"; echo c > "$MOK_CERT"
-  FAKE_MOK=no run lp mok setup
-  assert_success
-  assert_output_contains "using existing key"
   refute_called_match openssl
-  assert_called "mokutil --import $MOK_CERT"
-  [[ $(cat "$MOK_KEY") == k ]]
+  [[ -z $(find "$PVE_LIVEPATCH_DIR" -name '*.key' -o -name '*.priv') ]]
 }
 
-@test "setup does nothing when the key is already enrolled" {
-  mkdir -p "$(dirname "$MOK_KEY")"; echo k > "$MOK_KEY"; echo c > "$MOK_CERT"
+@test "setup without a published certificate explains the GitHub secret" {
+  rm "$CERTDIR/module-signing.der"
+  run lp mok setup
+  assert_failure
+  assert_output_contains "MODULE_SIGNING_PEM"
+  [[ ! -e $CERT && ! -e $CERT.part ]]
+}
+
+@test "setup does nothing when the certificate is already enrolled" {
   FAKE_MOK=enrolled run lp mok setup
   assert_success
   assert_output_contains "already enrolled"
@@ -49,29 +51,20 @@ done'
 }
 
 @test "setup does not re-import while enrollment is pending" {
-  mkdir -p "$(dirname "$MOK_KEY")"; echo k > "$MOK_KEY"; echo c > "$MOK_CERT"
   FAKE_MOK=pending run lp mok setup
   assert_success
   assert_output_contains "already pending"
   refute_called_match "mokutil --import"
 }
 
-@test "setup refuses to overwrite when only half a key pair exists" {
-  mkdir -p "$(dirname "$MOK_KEY")"; echo k > "$MOK_KEY"
-  run lp mok setup
-  assert_failure
-  assert_output_contains "refusing to overwrite"
-  [[ $(cat "$MOK_KEY") == k ]]
-}
-
 @test "status reports each enrollment state" {
   run lp mok status
-  assert_output_contains "no key yet"
-  mkdir -p "$(dirname "$MOK_KEY")"; echo k > "$MOK_KEY"; echo c > "$MOK_CERT"
+  assert_output_contains "not downloaded yet"
+  echo c > "$CERT"
   FAKE_MOK=no      run lp mok status; assert_output_contains "not enrolled"
   FAKE_MOK=pending run lp mok status; assert_output_contains "enrollment pending"
   FAKE_MOK=enrolled FAKE_SB=enabled run lp mok status
-  assert_output_contains "key is enrolled"
+  assert_output_contains "certificate is enrolled"
   assert_output_contains "Secure Boot enabled"
 }
 

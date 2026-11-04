@@ -109,13 +109,13 @@ setup() {
   FAKE_SB=enabled FAKE_SIGNER="" run lp -y apply "$KO"
   assert_failure
   assert_output_contains "is not signed"
-  assert_output_contains "mok setup"
+  assert_output_contains "GitHub must sign it"
   refute_called_match "insmod"
 }
 
 @test "loads a signed module when Secure Boot is on and the key is enrolled" {
   touch "$BATS_TEST_TMPDIR/k" "$BATS_TEST_TMPDIR/c"
-  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/k" MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
+  FAKE_SB=enabled MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
   assert_success
   refute_output_contains "not enrolled"
   assert_called "insmod $KO"
@@ -123,8 +123,8 @@ setup() {
 
 @test "warns when the signing key is not enrolled yet" {
   touch "$BATS_TEST_TMPDIR/k" "$BATS_TEST_TMPDIR/c"
-  FAKE_SB=enabled FAKE_MOK=no MOK_KEY="$BATS_TEST_TMPDIR/k" MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
-  assert_output_contains "MOK key is not enrolled"
+  FAKE_SB=enabled FAKE_MOK=no MOK_CERT="$BATS_TEST_TMPDIR/c" run lp -y apply "$KO"
+  assert_output_contains "signing certificate is not enrolled"
 }
 
 @test "fails for a missing module file" {

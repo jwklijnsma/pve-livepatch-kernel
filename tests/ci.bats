@@ -41,6 +41,13 @@ log_call gh "$@"
 [[ $1 == release && $2 == download ]] || exit 1
 f="$FAKE_RELEASES/$3/PATCHSET"; [[ -f $f ]] || exit 1; cat "$f"'
   export FAKE_RELEASES="$T/releases"; mkdir -p "$FAKE_RELEASES"
+  export ALLOW_UNSIGNED=1
+}
+
+signing_pem() {   # signing_pem <cn> : key + certificate, like the GitHub secret
+  openssl req -new -x509 -nodes -days 30 -newkey rsa:2048 -subj "/CN=$1/" \
+    -keyout "$T/k.pem" -out "$T/c.pem" >/dev/null 2>&1
+  cat "$T/k.pem" "$T/c.pem"
 }
 
 discover() { "$DISCOVER_ROOT/ci/discover-kernels.sh"; }
@@ -96,4 +103,35 @@ patchset_id() { run discover; echo "$output" | grep -o 'auto_[0-9a-f]*' | head -
 @test "the shipped patches/auto set is valid (demo included)" {
   ls "$REPO_ROOT"/patches/auto/*.patch
   grep -q '^+++ b/fs/proc/cmdline.c' "$REPO_ROOT"/patches/auto/0001-demo-proc-cmdline.patch
+}
+
+@test "without MODULE_SIGNING_PEM it stops with a clear error" {
+  ALLOW_UNSIGNED=0 run discover
+  assert_failure
+  assert_output_contains "MODULE_SIGNING_PEM secret is not set"
+}
+
+@test "a key without its certificate is rejected" {
+  signing_pem a >/dev/null
+  MODULE_SIGNING_PEM=$(cat "$T/k.pem") run discover
+  assert_failure
+  assert_output_contains "has no certificate"
+}
+
+@test "a new signing key gives a new patch set id (everything is re-signed)" {
+  local a b
+  a=$(MODULE_SIGNING_PEM=$(signing_pem one) KEEP=1 patchset_id)
+  b=$(MODULE_SIGNING_PEM=$(signing_pem two) KEEP=1 patchset_id)
+  [[ -n $a && -n $b && $a != "$b" ]]
+}
+
+@test "signing/new-signing-key.sh makes a key + certificate the CI accepts" {
+  run "$REPO_ROOT/signing/new-signing-key.sh"
+  assert_success
+  local pem=$output
+  printf '%s\n' "$pem" | openssl pkey -noout
+  printf '%s\n' "$pem" | openssl x509 -noout
+  [[ $(printf '%s\n' "$pem" | openssl pkey -pubout) == "$(printf '%s\n' "$pem" | openssl x509 -noout -pubkey)" ]]
+  MODULE_SIGNING_PEM=$pem ALLOW_UNSIGNED=0 run discover
+  assert_success
 }

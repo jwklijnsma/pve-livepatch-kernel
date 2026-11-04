@@ -45,7 +45,7 @@ P
 
 @test "PVE source (small): patched tree ready, submodule checkout removed" {
   pve_fixture
-  run lp source
+  run lpb source
   assert_success
   assert_output_contains "only the needed commit"
   refute_output_contains "falling back"
@@ -61,7 +61,7 @@ P
 
 @test "PVE source --full keeps the full-history submodule" {
   pve_fixture
-  run lp source --full
+  run lpb source --full
   assert_success
   assert_output_contains "full history"
   local sub="$PVE_LIVEPATCH_DIR/pve-kernel/submodules/ubuntu-kernel"
@@ -71,15 +71,15 @@ P
 
 @test "PVE source can run again (re-fetches after the small-mode cleanup)" {
   pve_fixture
-  run lp source;  assert_success
-  run lp source;  assert_success
+  run lpb source;  assert_success
+  run lpb source;  assert_success
   grep -q 'return 42' "$PVE_LIVEPATCH_DIR/src/$KREL/kernel/answer.c"
 }
 
 @test "PVE source fails clearly when no bump-version commit matches" {
   pve_fixture
   stub dpkg-query 'echo 6.8.12-9'
-  run lp source
+  run lpb source
   assert_failure
   assert_output_contains "no 'bump version to 6.8.12-9' commit found"
 }
@@ -89,7 +89,7 @@ P
   sed -i 's/return 41;/return 41;  /' "$BATS_TEST_TMPDIR/upstream/pve-kernel/patches/kernel/0001-proxmox-tweak.patch"
   sed -i 's/-\treturn 41;  /-\treturn 99;/' "$BATS_TEST_TMPDIR/upstream/pve-kernel/patches/kernel/0001-proxmox-tweak.patch"
   git -C "$BATS_TEST_TMPDIR/upstream/pve-kernel" commit -qam "bump version to 6.8.12-4"
-  run lp source
+  run lpb source
   assert_failure
   assert_output_contains "PVE patch failed: 0001-proxmox-tweak.patch"
 }
@@ -98,7 +98,7 @@ P
   pve_fixture
   stub dpkg 'echo "dpkg should not be called" >&2; exit 1'
   stub dpkg-query 'echo "dpkg-query should not be called" >&2; exit 1'
-  PVE_KERNEL_PKGVER=6.8.12-4 run lp source
+  PVE_KERNEL_PKGVER=6.8.12-4 run lpb source
   assert_success
   assert_output_contains "Kernel package: proxmox-kernel-$KREL 6.8.12-4"
   grep -q 'return 42' "$PVE_LIVEPATCH_DIR/src/$KREL/kernel/answer.c"
@@ -106,7 +106,7 @@ P
 
 @test "unknown source option fails" {
   setup_fake_host pve
-  run lp source --bogus
+  run lpb source --bogus
   assert_failure
   assert_output_contains "unknown source option: --bogus"
 }
@@ -123,7 +123,7 @@ case $1 in
   source) mkdir -p linux-6.8.0; printf "EXTRAVERSION =\n" > linux-6.8.0/Makefile ;;
 esac'
   stub make '[[ " $* " == *" kernelrelease "* ]] && echo "$KREL"; exit 0'
-  run lp source
+  run lpb source
   assert_success
   assert_called "apt-get source -qq linux-image-unsigned-$KREL"
   grep -qx 'EXTRAVERSION = -45-generic' "$PVE_LIVEPATCH_DIR/src/$KREL/Makefile"

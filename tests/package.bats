@@ -42,10 +42,9 @@ build() { "$REPO_ROOT/packaging/build-deb.sh" "$@"; }
   [[ $(dpkg-deb -f "$deb" Version) == 2.3.4 ]]
   [[ $(dpkg-deb -f "$deb" Architecture) == all ]]
   [[ $(dpkg-deb -f "$deb" Depends) == *kmod* ]]
-  [[ $(dpkg-deb -f "$deb" Depends) == *openssl* ]]
+  [[ $(dpkg-deb -f "$deb" Depends) == *curl* ]]
   # build toolchain must not be pulled in on small nodes (apt installs Recommends)
   [[ $(dpkg-deb -f "$deb" Recommends) != *build-essential* ]]
-  [[ $(dpkg-deb -f "$deb" Suggests) == *libelf-dev* ]]
 }
 
 @test "installs an executable /usr/sbin/pve-livepatch with the release version" {
@@ -89,5 +88,6 @@ build() { "$REPO_ROOT/packaging/build-deb.sh" "$@"; }
 @test "nodes get no build toolchain or git: only mokutil is recommended" {
   deb=$(build 2.3.4)
   [[ $(dpkg-deb -f "$deb" Recommends) == mokutil ]]
-  [[ $(dpkg-deb -f "$deb" Suggests) == *libxxhash-dev* ]]
+  [[ $(dpkg-deb -f "$deb" Depends) != *openssl* ]]
+  ! dpkg-deb -c "$deb" | grep -q pve-livepatch-build      # the builder stays on GitHub
 }

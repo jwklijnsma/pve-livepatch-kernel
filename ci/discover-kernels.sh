@@ -8,9 +8,13 @@
 # atomically replaces the old one on the nodes. A kernel is rebuilt when its
 # release lp-auto-<kernel> is missing or was built from another patch set.
 #
+# The signing certificate is part of the id too: a new MODULE_SIGNING_PEM rebuilds
+# everything, signed with the new key.
+#
 # Env: DIST (trixie), KEEP (2 newest kernels), KERNELS (explicit list, skips the
 #      repository lookup), FORCE (true = rebuild even if up to date),
-#      PATCH_DIR (patches/auto), PVE_REPO_BASE, GH_REPO (for `gh release`)
+#      PATCH_DIR (patches/auto), PVE_REPO_BASE, GH_REPO (for `gh release`),
+#      MODULE_SIGNING_PEM (required unless ALLOW_UNSIGNED=1)
 set -Eeuo pipefail
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -33,7 +37,19 @@ if (( ${#patches[@]} == 0 )); then
   note "no patches in ${PATCH_DIR}/ — nothing to build"
   echo '[]'; exit 0
 fi
-id=$(for p in "${patches[@]}"; do printf '%s\n' "$(basename "$p")"; cat "$p"; done | sha256sum | cut -c1-12)
+if [[ -n ${MODULE_SIGNING_PEM:-} ]]; then
+  cert=$(printf '%s\n' "$MODULE_SIGNING_PEM" | openssl x509 -outform DER 2>/dev/null | sha256sum | cut -c1-64) \
+    || { note "MODULE_SIGNING_PEM has no certificate"; exit 1; }
+  [[ $cert != e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 ]] \
+    || { note "MODULE_SIGNING_PEM has no certificate (paste the key AND the certificate)"; exit 1; }
+elif [[ ${ALLOW_UNSIGNED:-0} == 1 ]]; then
+  cert=unsigned
+else
+  note "::error::the MODULE_SIGNING_PEM secret is not set — add it in GitHub (Settings → Secrets and variables → Actions), see README"
+  exit 1
+fi
+id=$( { for p in "${patches[@]}"; do printf '%s\n' "$(basename "$p")"; cat "$p"; done; echo "signing ${cert}"; } \
+      | sha256sum | cut -c1-12)
 name="auto_${id}"
 note "patch set ${name}: $(for p in "${patches[@]}"; do printf '%s ' "$(basename "$p")"; done)"
 

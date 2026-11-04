@@ -22,7 +22,7 @@ parse_signed() {
 }
 
 @test "appends a valid PKCS#7 signature in kernel module format" {
-  run in_script 'detect_platform; sign_module "'"$KO"'"'
+  run in_builder 'detect_platform; sign_module "'"$KO"'"'
   assert_success
   parse_signed "$KO"
   cmp -s "$BATS_TEST_TMPDIR/body" "$BATS_TEST_TMPDIR/orig.ko"          # module unchanged
@@ -34,7 +34,7 @@ parse_signed() {
 }
 
 @test "signature uses sha512 and no signed attributes (like sign-file)" {
-  run in_script 'detect_platform; sign_module "'"$KO"'"'
+  run in_builder 'detect_platform; sign_module "'"$KO"'"'
   parse_signed "$KO"
   run openssl cms -cmsout -print -inform DER -in "$BATS_TEST_TMPDIR/sig"
   assert_output_contains "sha512"
@@ -45,15 +45,15 @@ parse_signed() {
 
 @test "a PEM certificate works too" {
   openssl x509 -inform DER -in "$MOK_CERT" -out "$BATS_TEST_TMPDIR/cert.pem"
-  MOK_CERT="$BATS_TEST_TMPDIR/cert.pem" run in_script 'detect_platform; sign_module "'"$KO"'"'
+  MOK_CERT="$BATS_TEST_TMPDIR/cert.pem" run in_builder 'detect_platform; sign_module "'"$KO"'"'
   assert_success
   [[ $(tail -c 28 "$KO") == "~Module signature appended~"* ]]
 }
 
 @test "signing an already signed module is a no-op" {
-  in_script 'detect_platform; sign_module "'"$KO"'"' >/dev/null
+  in_builder 'detect_platform; sign_module "'"$KO"'"' >/dev/null
   cp "$KO" "$BATS_TEST_TMPDIR/once.ko"
-  run in_script 'detect_platform; sign_module "'"$KO"'"'
+  run in_builder 'detect_platform; sign_module "'"$KO"'"'
   assert_success
   assert_output_contains "already signed"
   cmp -s "$KO" "$BATS_TEST_TMPDIR/once.ko"
@@ -61,14 +61,14 @@ parse_signed() {
 
 @test "unreadable certificate fails without touching the module" {
   echo garbage > "$MOK_CERT"
-  run in_script 'detect_platform; sign_module "'"$KO"'"'
+  run in_builder 'detect_platform; sign_module "'"$KO"'"'
   assert_failure
   assert_output_contains "cannot read certificate"
   cmp -s "$KO" "$BATS_TEST_TMPDIR/orig.ko"
 }
 
-@test "missing key points at 'mok setup'" {
-  MOK_KEY=/nonexistent run in_script 'detect_platform; sign_module "'"$KO"'"'
+@test "missing key fails clearly" {
+  MOK_KEY=/nonexistent run in_builder 'detect_platform; sign_module "'"$KO"'"'
   assert_failure
-  assert_output_contains "mok setup"
+  assert_output_contains "signing key '/nonexistent'"
 }

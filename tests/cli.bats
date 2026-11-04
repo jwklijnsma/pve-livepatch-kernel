@@ -47,16 +47,16 @@ setup() { setup_fake_host pve; }
 
 @test "detects Proxmox VE from a -pve kernel" {
   rm -f "$STUB_BIN/pveversion"
-  run in_script 'detect_platform; echo "$PLATFORM $MOK_KEY"'
+  run in_script 'detect_platform; echo "$PLATFORM"'
   assert_success
-  [[ $output == "pve /var/lib/dkms/mok.key" ]]
+  [[ $output == "pve" ]]
 }
 
-@test "detects Ubuntu from os-release and uses shim MOK key" {
+@test "detects Ubuntu from os-release" {
   setup_fake_host ubuntu
-  run in_script 'detect_platform; echo "$PLATFORM $MOK_KEY"'
+  run in_script 'detect_platform; echo "$PLATFORM"'
   assert_success
-  [[ $output == "ubuntu /var/lib/shim-signed/mok/MOK.priv" ]]
+  [[ $output == "ubuntu" ]]
 }
 
 @test "detects Ubuntu when ID is quoted" {
@@ -88,9 +88,24 @@ setup() { setup_fake_host pve; }
   assert_output_contains "PLATFORM must be pve or ubuntu"
 }
 
-@test "MOK_KEY env overrides the platform default" {
-  MOK_KEY=/custom/key run in_script 'detect_platform; echo "$MOK_KEY"'
-  [[ $output == "/custom/key" ]]
+@test "build commands are gone from the node tool and say where they went" {
+  for c in source build clean all; do
+    run lp "$c"
+    assert_failure
+    assert_output_contains "built by GitHub Actions"
+  done
+}
+
+@test "the node tool has no signing key and no build code" {
+  ! grep -q 'MOK_KEY\|sign_module\|klp-build "' "$SCRIPT"
+}
+
+@test "builder: --help and --version" {
+  run lpb --help
+  assert_success
+  assert_output_contains "build <file.patch|URL>"
+  run "$BUILDER" --version
+  assert_success
 }
 
 @test "platform_name shows os-release PRETTY_NAME on Ubuntu" {

@@ -17,7 +17,7 @@ make_pve_repo() {
 @test "find_pve_commit picks the exact 'bump version' commit" {
   make_pve_repo
   local want; want=$(git -C "$REPO" log --format='%H %s' | awk '$0 ~ / bump version to 6\.8\.12-4$/ {print $1}')
-  run in_script "find_pve_commit '$REPO' 6.8.12-4"
+  run in_builder "find_pve_commit '$REPO' 6.8.12-4"
   assert_success
   [[ $output == "$want" ]]
 }
@@ -25,15 +25,15 @@ make_pve_repo() {
 @test "find_pve_commit does not match a longer version (6.8.12-40)" {
   make_pve_repo
   local want; want=$(git -C "$REPO" log --format='%H %s' | awk '/bump version to 6\.8\.12-40$/ {print $1}')
-  run in_script "find_pve_commit '$REPO' 6.8.12-40"
+  run in_builder "find_pve_commit '$REPO' 6.8.12-40"
   [[ $output == "$want" ]]
-  run in_script "find_pve_commit '$REPO' 6.8.12-4"
+  run in_builder "find_pve_commit '$REPO' 6.8.12-4"
   [[ $output != "$want" ]]
 }
 
 @test "find_pve_commit handles backport versions with ~ and +" {
   make_pve_repo
-  run in_script "find_pve_commit '$REPO' '6.8.12-4~bpo12+1'"
+  run in_builder "find_pve_commit '$REPO' '6.8.12-4~bpo12+1'"
   assert_success
   [[ -n $output ]]
 }
@@ -47,14 +47,14 @@ make_pve_repo() {
 printf "%040d\tbump version to 6.8.12-4\n" 1
 sleep 0.3
 for i in $(seq 1 2000); do printf "%040d\tbump version to 6.8.12-4 older\n" "$i"; done'
-  run in_script "find_pve_commit /unused 6.8.12-4"
+  run in_builder "find_pve_commit /unused 6.8.12-4"
   assert_success
   [[ $output == 0000000000000000000000000000000000000001 ]]
 }
 
 @test "find_pve_commit returns nothing for an unknown version" {
   make_pve_repo
-  run in_script "find_pve_commit '$REPO' 6.99.0-1"
+  run in_builder "find_pve_commit '$REPO' 6.99.0-1"
   assert_success
   [[ -z $output ]]
 }
@@ -64,7 +64,7 @@ for i in $(seq 1 2000); do printf "%040d\tbump version to 6.8.12-4 older\n" "$i"
   mkdir -p "$src"
   printf 'VERSION = 6\nPATCHLEVEL = 8\nSUBLEVEL = 12\nEXTRAVERSION =\n' > "$src/Makefile"
   stub make '[[ " $* " == *" kernelrelease "* ]] && echo "${FAKE_RELEASE:-$KREL}"; exit 0'
-  run in_script "finalise_tree '$src'"
+  run in_builder "finalise_tree '$src'"
   assert_success
   grep -qx 'EXTRAVERSION = -4-pve' "$src/Makefile"
   cmp -s "$KCONFIG" "$src/.config"
@@ -81,7 +81,7 @@ CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"
 CONFIG_SYSTEM_REVOCATION_KEYS="debian/canonical-revoked-certs.pem"
 EOF
   stub make '[[ " $* " == *" kernelrelease "* ]] && echo "$KREL"; exit 0'
-  run in_script "finalise_tree '$src'"
+  run in_builder "finalise_tree '$src'"
   assert_success
   grep -qx 'CONFIG_SYSTEM_TRUSTED_KEYS="debian/canonical-certs.pem"' "$src/.config"
   grep -qx 'CONFIG_SYSTEM_REVOCATION_KEYS=""' "$src/.config"
@@ -94,7 +94,7 @@ EOF
   mkdir -p "$src"
   printf 'EXTRAVERSION =\n' > "$src/Makefile"
   stub make '[[ " $* " == *" kernelrelease "* ]] && echo "6.8.12-4-pve+"; exit 0'
-  run in_script "finalise_tree '$src'"
+  run in_builder "finalise_tree '$src'"
   assert_failure
   assert_output_contains "!= running '6.8.12-4-pve'"
 }

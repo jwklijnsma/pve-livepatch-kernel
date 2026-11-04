@@ -42,14 +42,13 @@ publish() {   # publish <id> : release with livepatch-auto_<id>-<kernel>.ko
   refute_called_match insmod
 }
 
-@test "downloads, verifies, signs, loads and installs the automatic patch" {
-  make_test_key
+@test "downloads, verifies, loads and installs the automatic patch" {
   publish "$ID"
   run lp -y auto
   assert_success
   local ko="$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-auto_$ID.ko"
   assert_output_contains "sha256 verified"
-  assert_output_contains "signed livepatch-auto_$ID.ko"
+  assert_output_contains "signed by:"
   assert_called "insmod $ko"
   [[ -f $PVE_LIVEPATCH_DIR/installed/$KREL/livepatch-auto_$ID.ko ]]
   assert_output_contains "automatic live patch livepatch_auto_$ID is active"
@@ -95,11 +94,11 @@ publish() {   # publish <id> : release with livepatch-auto_<id>-<kernel>.ko
   assert_output_contains "nothing to patch"
 }
 
-@test "Secure Boot without a key: stops before loading" {
+@test "Secure Boot and an unsigned module: stops before loading" {
   publish "$ID"
-  FAKE_SB=enabled MOK_KEY=/nonexistent run lp -y auto run
+  FAKE_SB=enabled FAKE_SIGNER="" run lp -y auto run
   assert_failure
-  assert_output_contains "mok setup"
+  assert_output_contains "is not signed"
   refute_called_match insmod
 }
 

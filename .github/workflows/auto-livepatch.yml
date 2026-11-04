@@ -8,7 +8,8 @@ name: auto live patch
 #     ONE cumulative module from every patch in patches/auto/ that still applies
 #     (fixes the kernel already has are left out);
 #   * adding or changing a patch in patches/auto/ rebuilds all of them.
-# Nodes with `pve-livepatch auto enable` fetch and load it by themselves.
+# Modules are signed with the MODULE_SIGNING_PEM secret; nodes with
+# `pve-livepatch auto enable` only download, check and load them.
 # Settings: repository variables LIVEPATCH_DIST and LIVEPATCH_KEEP.
 on:
   schedule:
@@ -49,6 +50,7 @@ jobs:
           KEEP: ${{ vars.LIVEPATCH_KEEP || '2' }}
           KERNELS: ${{ inputs.kernels }}
           FORCE: ${{ inputs.force }}
+          MODULE_SIGNING_PEM: ${{ secrets.MODULE_SIGNING_PEM }}
         run: |
           builds=$(ci/discover-kernels.sh)
           echo "builds=$builds" >> "$GITHUB_OUTPUT"
@@ -69,5 +71,7 @@ jobs:
       name: ${{ matrix.name }}
       dist: ${{ vars.LIVEPATCH_DIST || 'trixie' }}
       tag: lp-auto-${{ matrix.kernel }}
+    secrets:
+      MODULE_SIGNING_PEM: ${{ secrets.MODULE_SIGNING_PEM }}
     permissions:
       contents: write

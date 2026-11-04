@@ -11,8 +11,11 @@
 #           already contains are skipped. If none is left, no module is built.
 #   name    module name: letters, digits, _ (max 40)
 #
-# Output in dist/: livepatch-<name>-<kernel>.ko, <name>.patch, build.log, SHA256SUMS
-#                  (+ PATCHSET for a directory: which patches went in)
+# Output in dist/: livepatch-<name>-<kernel>.ko (signed), <name>.patch, build.log,
+#                  module-signing.der, SHA256SUMS (+ PATCHSET for a directory)
+#
+# Signing: MODULE_SIGNING_PEM (GitHub secret) holds the module signing private key
+# and its certificate, both PEM. Without it the build stops, unless ALLOW_UNSIGNED=1.
 set -Eeuo pipefail
 
 KERNEL=${1:?kernel release required, e.g. 7.0.14-26-pve}
@@ -22,7 +25,7 @@ DIST=${4:-trixie}
 PVE_REPO_BASE=${PVE_REPO_BASE:-http://download.proxmox.com/debian/pve}
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
-LP="$REPO_DIR/pve-livepatch.sh"
+LP="$REPO_DIR/pve-livepatch-build.sh"
 export PVE_LIVEPATCH_DIR=${PVE_LIVEPATCH_DIR:-$REPO_DIR/_build}
 DIST_DIR="$REPO_DIR/dist"
 mkdir -p "$PVE_LIVEPATCH_DIR" "$DIST_DIR"
@@ -44,19 +47,40 @@ on_exit() {
     done
   fi
 }
-trap on_exit EXIT
+
+SIGN_DIR=""
+trap 'on_exit; [[ -z $SIGN_DIR ]] || rm -rf "$SIGN_DIR"' EXIT
 
 [[ $KERNEL =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || die "kernel must look like 7.0.14-26-pve (got '$KERNEL')"
 [[ $NAME =~ ^[A-Za-z0-9_]{1,40}$ ]] || die "name must be letters, digits or _ (max 40), got '$NAME'"
 [[ $DIST =~ ^[a-z]+$ ]] || die "invalid dist '$DIST'"
 if [[ ! $PATCH =~ ^https?:// && $PATCH != /* ]]; then PATCH="$REPO_DIR/$PATCH"; fi
 [[ $PATCH =~ ^https?:// || -r $PATCH ]] || die "patch not found: $PATCH"
-rm -f "$DIST_DIR"/*.ko "$DIST_DIR"/*.patch "$DIST_DIR"/build.log "$DIST_DIR"/PATCHSET "$DIST_DIR"/SHA256SUMS
+rm -f "$DIST_DIR"/*.ko "$DIST_DIR"/*.patch "$DIST_DIR"/build.log "$DIST_DIR"/PATCHSET "$DIST_DIR"/SHA256SUMS "$DIST_DIR"/module-signing.der
 
 export DEBIAN_FRONTEND=noninteractive
 log "Base packages"
 apt-get update -qq
-apt-get install -y -qq --no-install-recommends curl ca-certificates gzip >/dev/null
+apt-get install -y -qq --no-install-recommends curl ca-certificates gzip openssl >/dev/null
+
+# --- 0. signing key (checked first: no point building for hours without it) ----------
+SIGN_DIR=$(mktemp -d); chmod 700 "$SIGN_DIR"
+if [[ -n ${MODULE_SIGNING_PEM:-} ]]; then
+  ( umask 077
+    printf '%s\n' "$MODULE_SIGNING_PEM" > "$SIGN_DIR/bundle.pem"
+    openssl pkey -in "$SIGN_DIR/bundle.pem" -out "$SIGN_DIR/key.pem" 2>/dev/null ) \
+    || die "MODULE_SIGNING_PEM has no readable private key"
+  openssl x509 -in "$SIGN_DIR/bundle.pem" -outform DER -out "$DIST_DIR/module-signing.der" 2>/dev/null \
+    || die "MODULE_SIGNING_PEM has no certificate (paste the key AND the certificate)"
+  [[ $(openssl pkey -in "$SIGN_DIR/key.pem" -pubout) == "$(openssl x509 -inform DER -in "$DIST_DIR/module-signing.der" -noout -pubkey)" ]] \
+    || die "the certificate in MODULE_SIGNING_PEM does not belong to its private key"
+  export MOK_KEY="$SIGN_DIR/key.pem" MOK_CERT="$DIST_DIR/module-signing.der"
+  echo "signing with: $(openssl x509 -inform DER -in "$MOK_CERT" -noout -subject)"
+elif [[ ${ALLOW_UNSIGNED:-0} == 1 ]]; then
+  echo "WARNING: building an UNSIGNED module (ALLOW_UNSIGNED=1) — it won't load with Secure Boot on"
+else
+  die "the MODULE_SIGNING_PEM secret is not set — add it in GitHub (Settings → Secrets and variables → Actions), see README"
+fi
 
 # --- 1. kernel package version + exact config from the Proxmox repository ----------
 log "Looking up ${KERNEL} in ${PVE_REPO_BASE} (${DIST})"
@@ -154,6 +178,11 @@ elif [[ $PATCH != "$DIST_DIR/${NAME}.patch" ]]; then
 fi
 sums=("livepatch-${NAME}-${KERNEL}.ko" "${NAME}.patch"); [[ -f $DIST_DIR/PATCHSET ]] && sums+=(PATCHSET)
 (cd "$DIST_DIR" && sha256sum "${sums[@]}" > SHA256SUMS)
+if [[ -n ${MOK_KEY:-} ]]; then
+  [[ $(tail -c 28 "$DIST_DIR/livepatch-${NAME}-${KERNEL}.ko" | head -c 27) == '~Module signature appended~' ]] \
+    || die "module was not signed"
+  echo "module signed"
+fi
 log "Done"
 ls -l "$DIST_DIR"
 modinfo "$DIST_DIR/livepatch-${NAME}-${KERNEL}.ko" | grep -E '^(name|vermagic|livepatch):' || true

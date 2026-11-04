@@ -12,7 +12,7 @@ setup() {
 }
 
 @test "clean removes sources and build trees, keeps modules and patches" {
-  run lp -y clean
+  run lpb -y clean
   assert_success
   assert_output_contains "freed"
   [[ ! -e $PVE_LIVEPATCH_DIR/src && ! -e $PVE_LIVEPATCH_DIR/pve-kernel && ! -e $PVE_LIVEPATCH_DIR/ubuntu-src ]]
@@ -21,7 +21,7 @@ setup() {
 }
 
 @test "clean asks first and keeps everything on 'n'" {
-  run bash -c 'source "$1"; need_root() { :; }; main clean <<< n' _ "$SCRIPT"
+  run bash -c 'source "$1"; need_root() { :; }; main clean <<< n' _ "$BUILDER"
   assert_failure
   assert_output_contains "aborted"
   [[ -f $PVE_LIVEPATCH_DIR/src/$KREL/vmlinux ]]
@@ -29,7 +29,7 @@ setup() {
 
 @test "clean with nothing to delete" {
   rm -rf "$PVE_LIVEPATCH_DIR"/{src,pve-kernel,ubuntu-src}
-  run lp -y clean
+  run lpb -y clean
   assert_success
   assert_output_contains "nothing to clean"
 }

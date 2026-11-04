@@ -6,7 +6,9 @@ name: build live patch
 #   Actions → "build live patch" → Run workflow
 #   then on the node:  pve-livepatch fetch lp-<name>-<kernel>
 # auto-livepatch.yml calls this for every new Proxmox kernel (release lp-auto-<kernel>).
-# Modules are published UNSIGNED; each node signs them with its own MOK key.
+# Modules are signed here with the MODULE_SIGNING_PEM secret (private key +
+# certificate, PEM); nodes only download, check and load them. The certificate
+# is published as release "signing-cert" for `pve-livepatch mok setup`.
 on:
   workflow_dispatch:
     inputs:
@@ -29,6 +31,8 @@ on:
       name:   { type: string, required: true }
       dist:   { type: string, default: trixie }
       tag:    { type: string, default: "" }
+    secrets:
+      MODULE_SIGNING_PEM: { required: false }
 
 permissions:
   contents: write
@@ -77,9 +81,11 @@ jobs:
           fi
 
       - name: Build in a Debian ${{ inputs.dist }} container
+        env:
+          MODULE_SIGNING_PEM: ${{ secrets.MODULE_SIGNING_PEM }}
         run: |
           echo "building in $BUILD_DIR"
-          docker run --rm -v "$PWD:/w" -v "$BUILD_DIR:/build" -w /w -e PVE_LIVEPATCH_DIR=/build \
+          docker run --rm -v "$PWD:/w" -v "$BUILD_DIR:/build" -w /w -e PVE_LIVEPATCH_DIR=/build -e MODULE_SIGNING_PEM \
             "debian:${DIST}" bash ci/build-livepatch.sh "$KERNEL" "$PATCH" "$NAME" "$DIST"
 
       - name: Keep build logs
@@ -99,7 +105,7 @@ jobs:
         run: |
           sudo chown -R "$(id -u)" dist
           assets=()
-          for f in dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/build.log dist/PATCHSET dist/SHA256SUMS; do
+          for f in dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/build.log dist/PATCHSET dist/module-signing.der dist/SHA256SUMS; do
             [[ -f $f ]] && assets+=("$f")
           done
           if [[ $TAG == lp-auto-* ]]; then
@@ -118,7 +124,7 @@ jobs:
             run=$(printf '%s\n' '```bash' "pve-livepatch fetch ${TAG}" \
                   "pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist" '```')
           fi
-          printf '%s\n\nThe module is **unsigned**; each node signs it with its own MOK key.\n\n%s\n' "$body" "$run" > notes.md
+          printf '%s\n\nSigned on GitHub with the certificate in release `signing-cert` (enroll it once per node: `pve-livepatch mok setup`).\n\n%s\n' "$body" "$run" > notes.md
           [[ -f dist/PATCHSET ]] && { echo; echo '```'; cat dist/PATCHSET; echo '```'; } >> notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
@@ -127,3 +133,14 @@ jobs:
               --title "$title" --notes-file notes.md --latest=false
           fi
           gh release view "$TAG" --json url --jq .url
+
+          # the certificate nodes enroll for Secure Boot (pve-livepatch mok setup)
+          if [[ -f dist/module-signing.der ]]; then
+            if gh release view signing-cert >/dev/null 2>&1; then
+              gh release upload signing-cert dist/module-signing.der --clobber
+            else
+              gh release create signing-cert dist/module-signing.der --target "$GITHUB_SHA" --latest=false \
+                --title "Module signing certificate" \
+                --notes "Certificate GitHub Actions signs live-patch modules with. On Secure Boot nodes enroll it once: \`pve-livepatch mok setup\` (one reboot)."
+            fi
+          fi

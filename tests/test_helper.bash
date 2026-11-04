@@ -6,7 +6,8 @@
 # Stubs append their argv to $STUB_LOG so tests can assert what was called.
 
 REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
-SCRIPT="$REPO_ROOT/pve-livepatch.sh"
+SCRIPT="$REPO_ROOT/pve-livepatch.sh"            # node: download, check, load
+BUILDER="$REPO_ROOT/pve-livepatch-build.sh"     # GitHub Actions: source, klp-build, sign
 
 setup_fake_host() {
   local platform=${1:-pve}
@@ -24,7 +25,7 @@ setup_fake_host() {
   export PROC_VERSION="$T/proc_version"
   export OS_RELEASE="$T/os-release"
   export KCONFIG="$T/config"
-  unset PLATFORM MOK_KEY MOK_CERT PVE_COMMIT UBUNTU_PRO_TOKEN
+  unset PLATFORM MOK_KEY MOK_CERT PVE_COMMIT UBUNTU_PRO_TOKEN PVE_LIVEPATCH_CERT
 
   case $platform in
     pve)
@@ -105,6 +106,16 @@ add_livepatch() {
 # run the CLI with the real strict-mode main(), only the root check bypassed
 lp() {
   bash -c 'source "$1"; shift; need_root() { :; }; main "$@"' _ "$SCRIPT" "$@"
+}
+
+# run the builder CLI the same way
+lpb() {
+  bash -c 'source "$1"; shift; need_root() { :; }; main "$@"' _ "$BUILDER" "$@"
+}
+
+# run a snippet with the builder's functions loaded (no main)
+in_builder() {
+  bash -c 'set -Eeuo pipefail; source "$1"; need_root() { :; }; eval "$2"' _ "$BUILDER" "$1"
 }
 
 # run a snippet with the script's functions loaded (no main)

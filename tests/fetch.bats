@@ -22,15 +22,14 @@ cp "$f" "$out"'
   OUT="$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko"
 }
 
-@test "fetch by tag: downloads, verifies sha256, signs, prints path" {
-  make_test_key
+@test "fetch by tag: downloads, verifies sha256 + signature, never signs itself" {
   run lp fetch "$TAG"
   assert_success
   assert_called "curl https://github.com/jwklijnsma/pve-livepatch-kernel/releases/download/$TAG/livepatch-fix1-$KREL.ko"
   assert_output_contains "sha256 verified"
-  assert_output_contains "signed livepatch-fix1.ko"
+  assert_output_contains "signed by: pve-livepatch module signing key"
   [[ ${lines[-1]} == "$OUT" ]]
-  [[ $(tail -c 28 "$OUT") == "~Module signature appended~"* ]]
+  cmp -s "$OUT" "$REL/livepatch-fix1-$KREL.ko"          # byte-identical to what GitHub signed
 }
 
 @test "PVE_LIVEPATCH_REPO selects another repository" {
@@ -96,18 +95,18 @@ cp "$f" "$out"'
   assert_output_contains "is not a livepatch module"
 }
 
-@test "Secure Boot on without a key: stops and says to run mok setup" {
-  FAKE_SB=enabled MOK_KEY=/nonexistent run lp fetch "$TAG"
+@test "Secure Boot on and the module is unsigned: stops before loading" {
+  FAKE_SB=enabled FAKE_SIGNER="" run lp fetch "$TAG"
   assert_failure
-  assert_output_contains "mok setup"
+  assert_output_contains "is not signed and Secure Boot is on"
+  assert_output_contains "MODULE_SIGNING_PEM"
   [[ -f $OUT ]]
 }
 
-@test "Secure Boot off without a key: module kept unsigned" {
-  MOK_KEY=/nonexistent run lp fetch "$TAG"
+@test "Secure Boot off: an unsigned module is accepted with a note" {
+  FAKE_SIGNER="" run lp fetch "$TAG"
   assert_success
-  assert_output_contains "left unsigned"
-  [[ $(tail -c 28 "$OUT") != "~Module signature appended~"* ]]
+  assert_output_contains "module is not signed (fine while Secure Boot is off)"
 }
 
 @test "direct URL works but warns there is no checksum" {
@@ -125,22 +124,23 @@ cp "$f" "$out"'
 
 # --- setup --minimal -----------------------------------------------------------
 
-@test "setup --minimal installs only what loading and signing need" {
-  stub apt-get 'log_call apt-get "$@"'
-  run lp setup --minimal
-  assert_success
-  assert_called "apt-get install -y --no-install-recommends curl ca-certificates kmod openssl mokutil"
-  refute_called_match build-essential
-  refute_called_match "git"
-  assert_output_contains "auto enable"
-}
-
-@test "full setup installs everything klp-build needs" {
+@test "setup installs only what loading needs (no compiler, no openssl, no git)" {
   stub apt-get 'log_call apt-get "$@"'
   run lp setup
   assert_success
+  assert_called "apt-get install -y --no-install-recommends curl ca-certificates kmod mokutil"
+  refute_called_match "build-essential\|openssl\|git"
+  assert_output_contains "auto enable"
+  run lp setup --minimal                     # old spelling still works
+  assert_success
+}
+
+@test "builder setup installs everything klp-build needs" {
+  stub apt-get 'log_call apt-get "$@"'
+  run lpb setup
+  assert_success
   local inst; inst=$(grep '^apt-get install' "$STUB_LOG")
-  for pkg in build-essential gawk patch patchutils libxxhash-dev bison flex libelf-dev libssl-dev dwarves rsync git; do
+  for pkg in build-essential gawk patch patchutils libxxhash-dev bison flex libelf-dev libssl-dev dwarves rsync git openssl; do
     [[ " $inst " == *" $pkg "* ]] || { echo "missing $pkg in: $inst"; return 1; }
   done
 }
@@ -153,14 +153,13 @@ cp "$f" "$out"'
 
 # --- check on a small node ------------------------------------------------------
 
-@test "check passes on a fetch-only node (no gcc)" {
+@test "check needs no compiler and no free disk space" {
   stub gcc 'exit 127'
-  stub df 'echo "Avail"; echo " 3G"'
+  stub df 'echo "Avail"; echo " 1G"'
   run lp check
   assert_success
-  assert_output_contains "fetch mode: no local build toolchain needed"
   assert_output_contains "insmod available"
-  refute_output_contains "gcc mismatch"
-  refute_output_contains "only 3G"
+  refute_output_contains "gcc"
+  refute_output_contains "G free"
   assert_output_contains "Ready."
 }

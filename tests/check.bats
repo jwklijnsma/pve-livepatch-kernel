@@ -9,7 +9,8 @@ setup() { setup_fake_host pve; }
   run lp check
   assert_success
   assert_output_contains "CONFIG_LIVEPATCH=y"
-  assert_output_contains "gcc 12.2.0 matches"
+  assert_output_contains "curl available"
+  assert_output_contains "insmod available"
   assert_output_contains "Secure Boot off"
   assert_output_contains "running a Proxmox kernel"
   assert_output_contains "Ready."
@@ -60,13 +61,6 @@ setup() { setup_fake_host pve; }
   assert_output_contains "missing"
 }
 
-@test "gcc mismatch only rules out local builds (fetch/auto still work)" {
-  FAKE_GCC=14.2.0 run lp check
-  assert_success
-  assert_output_contains "gcc mismatch: kernel built with '12.2.0', local gcc is '14.2.0'"
-  assert_output_contains "use fetch / auto"
-}
-
 @test "fails when the kernel has no CONFIG_KLP_BUILD" {
   sed -i '/CONFIG_KLP_BUILD/d' "$KCONFIG"
   run lp check
@@ -76,72 +70,39 @@ setup() { setup_fake_host pve; }
 }
 
 @test "fails when Secure Boot is on and no MOK key exists" {
-  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/nokey" MOK_CERT="$BATS_TEST_TMPDIR/nocert" run lp check
+  FAKE_SB=enabled MOK_CERT="$BATS_TEST_TMPDIR/nocert" run lp check
   assert_failure
   assert_output_contains "Secure Boot enabled"
-  assert_output_contains "no MOK key"
+  assert_output_contains "not downloaded yet"
 }
 
 @test "passes with Secure Boot on when the MOK key is enrolled" {
   touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
-  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
+  FAKE_SB=enabled MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
   assert_success
   assert_output_contains "is enrolled"
 }
 
 @test "fails when the MOK key exists but is not enrolled" {
   touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
-  FAKE_SB=enabled FAKE_MOK=no MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
+  FAKE_SB=enabled FAKE_MOK=no MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
   assert_failure
-  assert_output_contains "exists but is not enrolled"
+  assert_output_contains "is not enrolled"
   assert_output_contains "mok setup"
 }
 
 @test "fails with a reboot hint while enrollment is pending" {
   touch "$BATS_TEST_TMPDIR/mok.key" "$BATS_TEST_TMPDIR/mok.pub"
-  FAKE_SB=enabled FAKE_MOK=pending MOK_KEY="$BATS_TEST_TMPDIR/mok.key" MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
+  FAKE_SB=enabled FAKE_MOK=pending MOK_CERT="$BATS_TEST_TMPDIR/mok.pub" run lp check
   assert_failure
   assert_output_contains "reboot once and confirm it in MOK Manager"
 }
 
 @test "missing MOK key points at 'mok setup'" {
-  FAKE_SB=enabled MOK_KEY="$BATS_TEST_TMPDIR/nokey" MOK_CERT="$BATS_TEST_TMPDIR/nocert" run lp check
+  FAKE_SB=enabled MOK_CERT="$BATS_TEST_TMPDIR/nocert" run lp check
   assert_failure
   assert_output_contains "run: "
   assert_output_contains "mok setup"
-}
-
-@test "40G is enough for a klp-build" {
-  stub df 'echo "Avail"; echo " 40G"'
-  run lp check
-  assert_success
-  assert_output_contains "40G free"
-  assert_output_contains "a build needs ~30G"
-  refute_output_contains "only 40G"
-}
-
-@test "low disk space suggests PVE_LIVEPATCH_DIR and clean" {
-  stub df 'echo "Avail"; echo " 5G"'
-  run lp check
-  assert_success
-  assert_output_contains "only 5G free"
-  assert_output_contains "set PVE_LIVEPATCH_DIR"
-  assert_output_contains "clean"
-}
-
-@test "12G is too little for a build: suggests fetch / auto" {
-  stub df 'echo "Avail"; echo " 12G"'
-  run lp check
-  assert_success
-  assert_output_contains "only 12G free"
-  assert_output_contains "use 'fetch' / 'auto'"
-}
-
-@test "disk check works when PVE_LIVEPATCH_DIR does not exist yet" {
-  export PVE_LIVEPATCH_DIR="$BATS_TEST_TMPDIR/not/yet/there"
-  run lp check
-  assert_success
-  refute_output_contains "df:"
 }
 
 @test "dies when the kernel config file is missing" {

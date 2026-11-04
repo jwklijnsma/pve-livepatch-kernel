@@ -69,7 +69,7 @@ upstream_repo() {
 }
 
 @test "builds a module with klp-build and prints its path" {
-  run lp -j 3 build "$PATCH" --name cve_2026_1234
+  run lpb -j 3 build "$PATCH" --name cve_2026_1234
   assert_success
   local ko="$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-cve_2026_1234.ko"
   assert_called "klp-build -j 3 -o $ko $PATCH (cwd=$SRC)"
@@ -81,21 +81,21 @@ upstream_repo() {
 }
 
 @test "--non-replace becomes klp-build --no-replace" {
-  run lp build "$PATCH" --name fix1 --non-replace
+  run lpb build "$PATCH" --name fix1 --non-replace
   assert_success
   grep -q -- "-o $PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko --no-replace $PATCH" "$STUB_LOG"
 }
 
 @test "--full is still accepted (klp-build always builds everything)" {
-  run lp build "$PATCH" --name fix1 --full
+  run lpb build "$PATCH" --name fix1 --full
   assert_success
-  run lp --full build "$PATCH" --name fix1
+  run lpb --full build "$PATCH" --name fix1
   assert_success
 }
 
 @test "a kernel without klp-build is refused clearly" {
   rm -rf "$SRC/scripts/livepatch"
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "has no klp-build support"
   assert_output_contains ">= 6.19"
@@ -103,7 +103,7 @@ upstream_repo() {
 
 @test "a kernel without CONFIG_KLP_BUILD is refused clearly" {
   echo "# CONFIG_KLP_BUILD is not set" > "$SRC/.config"
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "CONFIG_KLP_BUILD=y"
   refute_called_match "^klp-build"
@@ -111,26 +111,26 @@ upstream_repo() {
 
 @test "warns before building when disk is short" {
   stub df 'echo "Avail"; echo " 5G"'
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "only 5G free"
 }
 
 @test "module name defaults to the patch file name, sanitised" {
-  run lp build "$PATCH"
+  run lpb build "$PATCH"
   assert_success
   [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-CVE_2026_1234.ko" ]]
 }
 
 @test "does not modify the source tree (dry-run only)" {
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_success
   grep -q 'return 41' "$SRC/kernel/answer.c"
 }
 
 @test "a fix that is already in the kernel is reported, not reversed" {
   sed -i 's/return 41/return 42/' "$SRC/kernel/answer.c"
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "already included"
   refute_called_match "^klp-build"
@@ -140,7 +140,7 @@ upstream_repo() {
   stub curl '
 out=""; while [[ $# -gt 0 ]]; do [[ $1 == -o ]] && { out=$2; shift; }; shift; done
 cp "$FAKE_PATCH" "$out"'
-  FAKE_PATCH="$PATCH" run lp build "https://git.kernel.org/stable/patch/?id=abc123" --name fromurl
+  FAKE_PATCH="$PATCH" run lpb build "https://git.kernel.org/stable/patch/?id=abc123" --name fromurl
   assert_success
   assert_output_contains "Downloading https://git.kernel.org/stable/patch/?id=abc123"
   ls "$PVE_LIVEPATCH_DIR/patches/"*.patch
@@ -148,7 +148,7 @@ cp "$FAKE_PATCH" "$out"'
 
 @test "fails when the patch does not apply to the kernel source" {
   sed -i 's/return 41/return 40/' "$SRC/kernel/answer.c"
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "does not apply cleanly"
   refute_called_match "^klp-build"
@@ -156,41 +156,47 @@ cp "$FAKE_PATCH" "$out"'
 
 @test "fails when source has not been prepared" {
   rm -rf "$SRC"
-  run lp build "$PATCH"
+  run lpb build "$PATCH"
   assert_failure
   assert_output_contains "no prepared source"
 }
 
 @test "fails without a patch argument" {
-  run lp build
+  run lpb build
   assert_failure
   assert_output_contains "usage:"
 }
 
 @test "fails for an unreadable patch file" {
-  run lp build "$BATS_TEST_TMPDIR/missing.patch"
+  run lpb build "$BATS_TEST_TMPDIR/missing.patch"
   assert_failure
   assert_output_contains "patch file not readable"
 }
 
 @test "rejects unknown build options" {
-  run lp build "$PATCH" --bogus
+  run lpb build "$PATCH" --bogus
   assert_failure
   assert_output_contains "unknown build option: --bogus"
 }
 
 @test "signs the built module with the MOK key (built-in signer)" {
   make_test_key
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "signed livepatch-fix1.ko"
   [[ $(tail -c 28 "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko") == "~Module signature appended~"* ]]
 }
 
-@test "warns when Secure Boot is on but nothing can sign" {
-  FAKE_SB=enabled MOK_KEY=/nonexistent run lp build "$PATCH" --name fix1
+@test "without MOK_KEY the module is built unsigned, with a warning" {
+  run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "NOT signed"
+}
+
+@test "an unreadable signing key fails the build" {
+  MOK_KEY=/nonexistent MOK_CERT=/nonexistent run lpb build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "not readable"
 }
 
 # --- objtool with live-patch support ---------------------------------------------
@@ -198,7 +204,7 @@ cp "$FAKE_PATCH" "$out"'
 @test "klp-build: healthy distro objtool is used as is (no upstream fetch)" {
   klp_src
   upstream_repo
-  run lp build "$PATCH" --name fix1
+  run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "objtool ready"
   refute_output_contains "upstream"
@@ -208,7 +214,7 @@ cp "$FAKE_PATCH" "$out"'
 @test "klp-build: broken distro objtool is replaced by the upstream stable copy" {
   klp_src
   upstream_repo v6.8.12
-  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  FAKE_OBJTOOL_BROKEN=1 run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "insn_reloc"
   assert_output_contains "using upstream objtool + klp-build (v6.8.12 from file://"
@@ -221,7 +227,7 @@ cp "$FAKE_PATCH" "$out"'
 @test "klp-build: falls back to the major.minor tag when the stable tag is missing" {
   klp_src
   upstream_repo v6.8
-  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  FAKE_OBJTOOL_BROKEN=1 run lpb build "$PATCH" --name fix1
   assert_success
   assert_output_contains "(v6.8 from file://"
 }
@@ -229,7 +235,7 @@ cp "$FAKE_PATCH" "$out"'
 @test "klp-build: clear error when no upstream copy can be fetched" {
   klp_src
   export UPSTREAM_KERNEL_GIT="file://$BATS_TEST_TMPDIR/does-not-exist"
-  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  FAKE_OBJTOOL_BROKEN=1 run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "could not fetch upstream 6.8.12 objtool/klp-build"
   refute_called_match "^klp-build"
@@ -237,14 +243,14 @@ cp "$FAKE_PATCH" "$out"'
 
 @test "klp-build 'no changes detected' gets a clear message" {
   klp_src
-  FAKE_KLP_FAIL="error: klp-build: no changes detected" run lp build "$PATCH" --name fix1
+  FAKE_KLP_FAIL="error: klp-build: no changes detected" run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "found no changed functions"
 }
 
 @test "other klp-build failures point at its log" {
   klp_src
-  FAKE_KLP_FAIL="error: klp-build: original kernel build failed" run lp build "$PATCH" --name fix1
+  FAKE_KLP_FAIL="error: klp-build: original kernel build failed" run lpb build "$PATCH" --name fix1
   assert_failure
   assert_output_contains "klp-build failed — see $PVE_LIVEPATCH_DIR/out/$KREL/klp-build-fix1.log"
 }
