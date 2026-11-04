@@ -1,0 +1,20 @@
+name: zz release test (temporary)
+on:
+  workflow_dispatch:
+  workflow_call:
+permissions:
+  contents: write
+jobs:
+  t:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - run: |
+          echo hi > f.txt
+          tag=lp-zztest-${{ github.run_id }}-${{ strategy.job-index }}-$RANDOM
+          gh release create "$tag" f.txt --target "$GITHUB_SHA" --title t --notes t --latest=false
+          gh release delete "$tag" --cleanup-tag -y
