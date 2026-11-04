@@ -60,10 +60,19 @@ setup() { setup_fake_host pve; }
   assert_output_contains "missing"
 }
 
-@test "fails on gcc mismatch with the kernel build compiler" {
+@test "gcc mismatch only rules out local builds (fetch/auto still work)" {
   FAKE_GCC=14.2.0 run lp check
-  assert_failure
+  assert_success
   assert_output_contains "gcc mismatch: kernel built with '12.2.0', local gcc is '14.2.0'"
+  assert_output_contains "use fetch / auto"
+}
+
+@test "fails when the kernel has no CONFIG_KLP_BUILD" {
+  sed -i '/CONFIG_KLP_BUILD/d' "$KCONFIG"
+  run lp check
+  assert_failure
+  assert_output_contains "CONFIG_KLP_BUILD not enabled"
+  assert_output_contains ">= 6.19"
 }
 
 @test "fails when Secure Boot is on and no MOK key exists" {
@@ -102,13 +111,13 @@ setup() { setup_fake_host pve; }
   assert_output_contains "mok setup"
 }
 
-@test "12G is enough for a small (default) build" {
-  stub df 'echo "Avail"; echo " 12G"'
+@test "40G is enough for a klp-build" {
+  stub df 'echo "Avail"; echo " 40G"'
   run lp check
   assert_success
-  assert_output_contains "12G free"
-  assert_output_contains "small build needs ~8G"
-  refute_output_contains "only 12G"
+  assert_output_contains "40G free"
+  assert_output_contains "a build needs ~30G"
+  refute_output_contains "only 40G"
 }
 
 @test "low disk space suggests PVE_LIVEPATCH_DIR and clean" {
@@ -120,12 +129,12 @@ setup() { setup_fake_host pve; }
   assert_output_contains "clean"
 }
 
-@test "--full raises the disk requirement to ~30G" {
+@test "12G is too little for a build: suggests fetch / auto" {
   stub df 'echo "Avail"; echo " 12G"'
-  run lp --full check
+  run lp check
   assert_success
   assert_output_contains "only 12G free"
-  assert_output_contains "full build needs ~30G"
+  assert_output_contains "use 'fetch' / 'auto'"
 }
 
 @test "disk check works when PVE_LIVEPATCH_DIR does not exist yet" {

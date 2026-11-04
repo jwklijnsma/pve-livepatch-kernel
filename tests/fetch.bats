@@ -125,31 +125,24 @@ cp "$f" "$out"'
 
 # --- setup --minimal -----------------------------------------------------------
 
-@test "setup --minimal installs only loader deps and the kpatch script" {
+@test "setup --minimal installs only what loading and signing need" {
   stub apt-get 'log_call apt-get "$@"'
-  stub git 'log_call git "$@"; [[ $1 == clone ]] && mkdir -p "$4/.git"; exit 0'
-  stub make 'log_call make "$@"'
   run lp setup --minimal
   assert_success
-  grep -q '^apt-get install -y --no-install-recommends git make curl ca-certificates kmod openssl mokutil$' "$STUB_LOG"
+  assert_called "apt-get install -y --no-install-recommends curl ca-certificates kmod openssl mokutil"
   refute_called_match build-essential
-  assert_called "make -C $PVE_LIVEPATCH_DIR/kpatch/kpatch install"
-  assert_called "make -C $PVE_LIVEPATCH_DIR/kpatch/contrib install"
-  [[ ! -e $PVE_LIVEPATCH_DIR/kpatch ]]
-  assert_output_contains "fetch <release-tag>"
+  refute_called_match "git"
+  assert_output_contains "auto enable"
 }
 
-@test "full setup installs everything kpatch-build needs (incl. gawk)" {
+@test "full setup installs everything klp-build needs" {
   stub apt-get 'log_call apt-get "$@"'
-  stub git 'log_call git "$@"; [[ $1 == clone ]] && mkdir -p "$4/.git"; exit 0'
-  stub make 'log_call make "$@"'
   run lp setup
   assert_success
   local inst; inst=$(grep '^apt-get install' "$STUB_LOG")
-  for pkg in build-essential gawk patch patchutils libxxhash-dev bison flex libelf-dev libssl-dev dwarves rsync; do
+  for pkg in build-essential gawk patch patchutils libxxhash-dev bison flex libelf-dev libssl-dev dwarves rsync git; do
     [[ " $inst " == *" $pkg "* ]] || { echo "missing $pkg in: $inst"; return 1; }
   done
-  assert_called "make -C $PVE_LIVEPATCH_DIR/kpatch install"
 }
 
 @test "setup rejects unknown options" {
@@ -160,22 +153,14 @@ cp "$f" "$out"'
 
 # --- check on a small node ------------------------------------------------------
 
-@test "check passes on a fetch-only node (no gcc, no kpatch-build)" {
-  rm -f "$STUB_BIN/kpatch-build"
+@test "check passes on a fetch-only node (no gcc)" {
   stub gcc 'exit 127'
   stub df 'echo "Avail"; echo " 3G"'
   run lp check
   assert_success
   assert_output_contains "fetch mode: no local build toolchain needed"
-  assert_output_contains "kpatch installed"
+  assert_output_contains "insmod available"
   refute_output_contains "gcc mismatch"
   refute_output_contains "only 3G"
   assert_output_contains "Ready."
-}
-
-@test "check fails when even the kpatch loader is missing" {
-  rm -f "$STUB_BIN/kpatch-build" "$STUB_BIN/kpatch"
-  run lp check
-  assert_failure
-  assert_output_contains "setup --minimal"
 }

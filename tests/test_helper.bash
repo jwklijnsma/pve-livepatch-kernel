@@ -2,7 +2,7 @@
 #
 # Every test gets an isolated fake host under $BATS_TEST_TMPDIR:
 #   fake kernel config, /proc/version, /etc/os-release, /sys/kernel/livepatch,
-#   a work dir, and stub binaries (gcc, mokutil, modinfo, kpatch, …) first on PATH.
+#   a work dir, and stub binaries (gcc, mokutil, modinfo, insmod, …) first on PATH.
 # Stubs append their argv to $STUB_LOG so tests can assert what was called.
 
 REPO_ROOT="$(cd "$(dirname "${BATS_TEST_FILENAME}")/.." && pwd)"
@@ -17,6 +17,10 @@ setup_fake_host() {
 
   export PVE_LIVEPATCH_DIR="$T/work"; mkdir -p "$PVE_LIVEPATCH_DIR"
   export SYSFS_LP="$T/sys/kernel/livepatch"; mkdir -p "$SYSFS_LP"
+  export SYS_MODULE="$T/sys/module"; mkdir -p "$SYS_MODULE"
+  export SYSTEMD_DIR="$T/etc/systemd/system"
+  export PVE_LIVEPATCH_SELF=/usr/sbin/pve-livepatch
+  export LP_WAIT=2
   export PROC_VERSION="$T/proc_version"
   export OS_RELEASE="$T/os-release"
   export KCONFIG="$T/config"
@@ -50,13 +54,15 @@ case $1 in
     esac ;;
   *) log_call mokutil "$@" ;;
 esac'
-  stub kpatch    'log_call kpatch "$@"; [[ $1 == version ]] && echo 0.9.10; exit 0'
   stub systemctl 'log_call systemctl "$@"'
-  stub kpatch-build '
-log_call kpatch-build "$@"
-name=""; while [[ $# -gt 0 ]]; do [[ $1 == -n ]] && { name=$2; shift; }; shift; done
-[[ -n ${FAKE_KPATCH_BUILD_FAIL:-} ]] && { echo "kpatch-build: ERROR" >&2; exit 1; }
-touch "livepatch-${name}.ko"'
+  # insmod of a live-patch module: the kernel creates its sysfs entries
+  stub insmod '
+log_call insmod "$@"
+[[ -n ${FAKE_INSMOD_FAIL:-} ]] && { echo "insmod: ERROR: could not insert module: Key was rejected by service" >&2; exit 1; }
+n=$(basename "$1" .ko); n=${n//-/_}
+mkdir -p "$SYS_MODULE/$n" "$SYSFS_LP/$n"
+echo 1 > "$SYSFS_LP/$n/enabled"; echo "${FAKE_TRANSITION:-0}" > "$SYSFS_LP/$n/transition"'
+  stub rmmod 'log_call rmmod "$@"; rm -rf "$SYS_MODULE/$1"'
   stub modinfo '
 field=$2
 case $field in
@@ -71,6 +77,7 @@ write_kconfig() {
   cat > "$KCONFIG" <<'EOF'
 CONFIG_MODULES=y
 CONFIG_LIVEPATCH=y
+CONFIG_KLP_BUILD=y
 CONFIG_DYNAMIC_FTRACE_WITH_REGS=y
 CONFIG_HAVE_RELIABLE_STACKTRACE=y
 CONFIG_KALLSYMS_ALL=y

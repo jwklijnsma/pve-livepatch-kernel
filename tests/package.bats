@@ -75,3 +75,19 @@ build() { "$REPO_ROOT/packaging/build-deb.sh" "$@"; }
   [[ -x $c/postrm ]]
   grep -q '"$1" = "purge"' "$c/postrm"
 }
+
+@test "prerm stops the timer and removes the units only on remove" {
+  deb=$(build 2.3.4)
+  c="$BATS_TEST_TMPDIR/ctl"
+  dpkg-deb -e "$deb" "$c"
+  [[ -x $c/prerm ]]
+  grep -q '"$1" = "remove"' "$c/prerm"
+  grep -q 'disable --now pve-livepatch-auto.timer' "$c/prerm"
+  sh -n "$c/prerm"
+}
+
+@test "nodes get no build toolchain or git: only mokutil is recommended" {
+  deb=$(build 2.3.4)
+  [[ $(dpkg-deb -f "$deb" Recommends) == mokutil ]]
+  [[ $(dpkg-deb -f "$deb" Suggests) == *libxxhash-dev* ]]
+}

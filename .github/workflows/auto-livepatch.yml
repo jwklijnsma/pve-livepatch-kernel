@@ -1,0 +1,73 @@
+name: auto live patch
+
+# Keeps a live patch ready for every new Proxmox VE kernel, without anyone
+# pressing a button:
+#   * every 6 hours it looks at Proxmox's repository for new kernels
+#     (the newest LIVEPATCH_KEEP, default 2, of LIVEPATCH_DIST, default trixie);
+#   * for each kernel without an up-to-date release lp-auto-<kernel> it builds
+#     ONE cumulative module from every patch in patches/auto/ that still applies
+#     (fixes the kernel already has are left out);
+#   * adding or changing a patch in patches/auto/ rebuilds all of them.
+# Nodes with `pve-livepatch auto enable` fetch and load it by themselves.
+# Settings: repository variables LIVEPATCH_DIST and LIVEPATCH_KEEP.
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  push:
+    branches: [main]
+    paths: ["patches/auto/**"]
+  workflow_dispatch:
+    inputs:
+      kernels:
+        description: "Only these kernels (space separated, e.g. 7.0.14-26-pve); empty = newest from the repository"
+        required: false
+      force:
+        description: "Rebuild even if the release is up to date"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: auto-livepatch
+  cancel-in-progress: false
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      builds: ${{ steps.d.outputs.builds }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: d
+        name: Find kernels that need a live patch
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          DIST: ${{ vars.LIVEPATCH_DIST || 'trixie' }}
+          KEEP: ${{ vars.LIVEPATCH_KEEP || '2' }}
+          KERNELS: ${{ inputs.kernels }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          builds=$(ci/discover-kernels.sh)
+          echo "builds=$builds" >> "$GITHUB_OUTPUT"
+          echo "### Kernels to build: \`$builds\`" >> "$GITHUB_STEP_SUMMARY"
+
+  build:
+    needs: discover
+    if: needs.discover.outputs.builds != '[]'
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJSON(needs.discover.outputs.builds) }}
+    uses: ./.github/workflows/build-livepatch.yml
+    with:
+      kernel: ${{ matrix.kernel }}
+      patch: patches/auto
+      name: ${{ matrix.name }}
+      dist: ${{ vars.LIVEPATCH_DIST || 'trixie' }}
+      tag: lp-auto-${{ matrix.kernel }}
+    permissions:
+      contents: write

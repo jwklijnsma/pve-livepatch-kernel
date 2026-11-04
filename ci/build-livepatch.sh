@@ -3,19 +3,22 @@
 # Used by .github/workflows/build-livepatch.yml inside a Debian container
 # (Debian 13 "trixie" for PVE 9), but works on any Debian box as root.
 #
-# Usage: ci/build-livepatch.sh <kernel> <patch-file|URL> <name> [full=false] [dist=trixie]
+# Usage: ci/build-livepatch.sh <kernel> <patch-file|URL|directory> <name> [dist=trixie]
 #   kernel  Proxmox kernel release as shown by `uname -r`, e.g. 7.0.14-26-pve
-#   patch   kernel source patch: URL or path (relative to the repo root is fine)
+#   patch   kernel source patch: URL or path (relative to the repo root is fine).
+#           A directory (patches/auto) makes one cumulative patch from every
+#           *.patch in it that still applies to this kernel; fixes the kernel
+#           already contains are skipped. If none is left, no module is built.
 #   name    module name: letters, digits, _ (max 40)
 #
 # Output in dist/: livepatch-<name>-<kernel>.ko, <name>.patch, build.log, SHA256SUMS
+#                  (+ PATCHSET for a directory: which patches went in)
 set -Eeuo pipefail
 
 KERNEL=${1:?kernel release required, e.g. 7.0.14-26-pve}
 PATCH=${2:?patch file or URL required}
 NAME=${3:?name required}
-FULL=${4:-false}
-DIST=${5:-trixie}
+DIST=${4:-trixie}
 PVE_REPO_BASE=${PVE_REPO_BASE:-http://download.proxmox.com/debian/pve}
 
 REPO_DIR=$(cd "$(dirname "$0")/.." && pwd)
@@ -26,12 +29,11 @@ mkdir -p "$PVE_LIVEPATCH_DIR" "$DIST_DIR"
 
 log() { printf '\n==> %s\n' "$*"; }
 die() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
-# keep kpatch's own log for the workflow, and show the important part on failure
+# on failure, show the important part of the build logs in the job log
 on_exit() {
-  local rc=$? klog="${HOME:-/root}/.kpatch/build.log"
-  cp -f "$klog" "$DIST_DIR/kpatch-build-internal.log" 2>/dev/null || true
+  local rc=$? f
   if (( rc != 0 )); then
-    for f in "$klog" "$PVE_LIVEPATCH_DIR"/out/*/*-build*.log; do
+    for f in "$PVE_LIVEPATCH_DIR"/out/*/*-build*.log; do
       [[ -s $f ]] || continue
       echo "::group::errors in $f"
       grep -nE 'error|Error|ERROR|\*\*\*|undefined reference|No such file' "$f" | tail -n 40 || true
@@ -49,6 +51,7 @@ trap on_exit EXIT
 [[ $DIST =~ ^[a-z]+$ ]] || die "invalid dist '$DIST'"
 if [[ ! $PATCH =~ ^https?:// && $PATCH != /* ]]; then PATCH="$REPO_DIR/$PATCH"; fi
 [[ $PATCH =~ ^https?:// || -r $PATCH ]] || die "patch not found: $PATCH"
+rm -f "$DIST_DIR"/*.ko "$DIST_DIR"/*.patch "$DIST_DIR"/build.log "$DIST_DIR"/PATCHSET "$DIST_DIR"/SHA256SUMS
 
 export DEBIAN_FRONTEND=noninteractive
 log "Base packages"
@@ -84,11 +87,13 @@ rm -rf "$meta"
 [[ -n $config ]] || die "kernel ${KERNEL} not found in the Proxmox ${DIST} repository (pve-no-subscription, pve-test)"
 echo "kernel package version: ${pkgver}"
 
-# --- 2. toolchain (+ kpatch) and compiler match ------------------------------------
+grep -qx 'CONFIG_KLP_BUILD=y' "$config" || die "${KERNEL} is not built with CONFIG_KLP_BUILD=y — klp-build cannot make live patches for it"
+
+# --- 2. toolchain and compiler match -------------------------------------------------
 # this container is plain Debian: tell pve-livepatch which kernel/platform it builds for
 export KREL=$KERNEL KCONFIG=$config PLATFORM=pve PVE_KERNEL_PKGVER=$pkgver
 
-log "Installing build toolchain and kpatch"
+log "Installing build toolchain"
 "$LP" -y setup
 
 want=$(sed -n 's/^CONFIG_CC_VERSION_TEXT="\(.*\)"$/\1/p' "$config")
@@ -101,13 +106,42 @@ if [[ $want != "$have" ]]; then
 fi
 
 # --- 3. source + build ---------------------------------------------------------------
-mode=(); [[ $FULL == true ]] && mode=(--full)
-
 log "Preparing Proxmox kernel source"
-"$LP" -y "${mode[@]}" source
+"$LP" -y source
+
+if [[ -d $PATCH ]]; then
+  # cumulative patch from a directory: keep what still applies to this kernel
+  src="$PVE_LIVEPATCH_DIR/src/$KERNEL"
+  combined="$DIST_DIR/${NAME}.patch"
+  applied=() skipped=()
+  : > "$combined"
+  shopt -s nullglob
+  for p in "$PATCH"/*.patch; do
+    # check on top of the patches taken so far (they may touch the same file)
+    if cat "$combined" "$p" | patch --dry-run --forward --batch -p1 -d "$src" >/dev/null 2>&1; then
+      cat "$p" >> "$combined"; applied+=("$(basename "$p")")
+    else
+      skipped+=("$(basename "$p")")
+    fi
+  done
+  shopt -u nullglob
+  { echo "patchset ${NAME}"
+    echo "kernel ${KERNEL}"
+    echo "applied: ${applied[*]:-none}"
+    echo "skipped (already in this kernel, or no longer applies): ${skipped[*]:-none}"
+  } > "$DIST_DIR/PATCHSET"
+  cat "$DIST_DIR/PATCHSET"
+  if (( ${#applied[@]} == 0 )); then
+    rm -f "$combined"
+    (cd "$DIST_DIR" && sha256sum PATCHSET > SHA256SUMS)
+    log "Nothing to build: no patch in the set applies to ${KERNEL}"
+    exit 0
+  fi
+  PATCH=$combined
+fi
 
 log "Building live patch ${NAME}"
-"$LP" -y "${mode[@]}" build "$PATCH" --name "$NAME"
+"$LP" -y build "$PATCH" --name "$NAME"
 
 # --- 4. release assets -----------------------------------------------------------------
 out="$PVE_LIVEPATCH_DIR/out/$KERNEL"
@@ -115,10 +149,11 @@ cp "$out/livepatch-${NAME}.ko" "$DIST_DIR/livepatch-${NAME}-${KERNEL}.ko"
 cp "$(ls -t "$out"/*-build-"${NAME}".log | head -1)" "$DIST_DIR/build.log"
 if [[ $PATCH =~ ^https?:// ]]; then
   cp "$(ls -t "$PVE_LIVEPATCH_DIR"/patches/*.patch | head -1)" "$DIST_DIR/${NAME}.patch"
-else
+elif [[ $PATCH != "$DIST_DIR/${NAME}.patch" ]]; then
   cp "$PATCH" "$DIST_DIR/${NAME}.patch"
 fi
-(cd "$DIST_DIR" && sha256sum "livepatch-${NAME}-${KERNEL}.ko" "${NAME}.patch" > SHA256SUMS)
+sums=("livepatch-${NAME}-${KERNEL}.ko" "${NAME}.patch"); [[ -f $DIST_DIR/PATCHSET ]] && sums+=(PATCHSET)
+(cd "$DIST_DIR" && sha256sum "${sums[@]}" > SHA256SUMS)
 log "Done"
 ls -l "$DIST_DIR"
 modinfo "$DIST_DIR/livepatch-${NAME}-${KERNEL}.ko" | grep -E '^(name|vermagic|livepatch):' || true

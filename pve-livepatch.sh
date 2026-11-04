@@ -1,22 +1,25 @@
 #!/usr/bin/env bash
 # =============================================================================
 # pve-livepatch.sh — live patch the running kernel WITHOUT a reboot on
-#                    Proxmox VE and Ubuntu, using kpatch (dynup/kpatch).
+#                    Proxmox VE and Ubuntu, using the kernel's own
+#                    scripts/livepatch/klp-build (kernels >= 6.19).
 #                    On Ubuntu it can also drive Canonical Livepatch.
 #
-# Workflow (kpatch, custom patches):
+# Workflow (custom patches):
 #   1. check    – verify the running kernel can be live patched
-#   2. setup    – install build deps + kpatch / kpatch-build
+#   2. setup    – install the kernel build toolchain
 #   3. source   – fetch the EXACT kernel source for `uname -r`
 #                   Proxmox VE: pve-kernel git @ matching "bump version" commit
 #                               + Proxmox kernel patches
 #                   Ubuntu:     `apt-get source` of the running kernel package
-#   4. build    – turn a source .patch (file or URL) into livepatch-<name>.ko
-#   5. apply    – load the module into the running kernel (optionally persist)
+#   4. build    – klp-build turns a source .patch (file or URL) into livepatch-<name>.ko
+#   5. apply    – insmod it into the running kernel (optionally re-load on boot)
 #
 # Small nodes (like Ubuntu Pro): build in GitHub Actions, then on the node
-#   setup --minimal  – only what loading needs (kpatch, openssl, mokutil)
+#   setup --minimal  – only what loading needs (kmod, curl, openssl, mokutil)
 #   fetch <tag>      – download a CI-built module, verify sha256 + kernel, sign
+#   auto enable      – keep the node patched: every 6 h and at boot, fetch and
+#                      load the automatic live patch built for its kernel
 #
 # Ubuntu only (official fixes, no build needed):
 #   canonical enable|status|disable – Canonical Livepatch via Ubuntu Pro
@@ -24,31 +27,33 @@
 # Notes:
 #   * Run as root (or on a test host running the IDENTICAL kernel and gcc —
 #     strongly recommended; build there, apply in production later).
-#   * Small mode (default): shallow source download and only vmlinux is built,
-#     ~8 GB disk, 15–45 min. --full also builds all modules (for fixes in
-#     module code): ~30 GB disk, 30–90 min.
-#   * kpatch builds "atomic replace" patches by default: loading a new patch
+#   * klp-build compiles the original and the patched kernel (vmlinux + all
+#     modules): ~30 GB disk and a few hours the first time.
+#   * klp-build makes "atomic replace" patches by default: loading a new patch
 #     REPLACES all previously loaded live patches (including Canonical's!),
 #     so make each patch cumulative — or pass --non-replace.
 #   * Not every change is live-patchable (struct/layout changes, __init code,
-#     some asm). kpatch-build refuses those; fall back to migrate + reboot.
+#     some asm). klp-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.5.2"
+readonly SCRIPT_VERSION="2.0.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
-readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
-readonly KPATCH_REF="${KPATCH_REF:-master}"
 readonly UPSTREAM_KERNEL_GIT="${UPSTREAM_KERNEL_GIT:-https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git https://github.com/gregkh/linux.git}"
 readonly RELEASE_REPO="${PVE_LIVEPATCH_REPO:-jwklijnsma/pve-livepatch-kernel}"   # where `fetch` downloads from
 # paths are overridable so the test suite can point them at fixtures
 KREL="${KREL:-$(uname -r)}"; readonly KREL
 readonly KCONFIG="${KCONFIG:-/boot/config-${KREL}}"
 readonly SYSFS_LP="${SYSFS_LP:-/sys/kernel/livepatch}"
+readonly SYS_MODULE="${SYS_MODULE:-/sys/module}"
+readonly SYSTEMD_DIR="${SYSTEMD_DIR:-/etc/systemd/system}"
 readonly PROC_VERSION="${PROC_VERSION:-/proc/version}"
 readonly OS_RELEASE="${OS_RELEASE:-/etc/os-release}"
+readonly LP_WAIT="${LP_WAIT:-60}"                     # seconds to wait for a patch transition
+SELF="${PVE_LIVEPATCH_SELF:-$(readlink -f "${BASH_SOURCE[0]}")}"; readonly SELF
 JOBS="${JOBS:-$(nproc)}"
 ASSUME_YES=0
-FULL=0            # 1 = full-history source + build vmlinux AND modules
+FULL=0            # 1 = full-history kernel source (default: only the needed commit)
+readonly BUILD_DISK_GB=30
 
 # ----------------------------------------------------------------------------- helpers
 if [[ -t 1 ]]; then C_R=$'\e[31m'; C_G=$'\e[32m'; C_Y=$'\e[33m'; C_B=$'\e[34m'; C_0=$'\e[0m'
@@ -70,8 +75,7 @@ confirm() {
 
 cfg_val() { grep -E "^$1=" "$KCONFIG" 2>/dev/null | cut -d= -f2- || true; }
 src_dir() { echo "${WORKDIR}/src/${KREL}"; }
-build_mode()  { (( FULL )) && echo full || echo small; }
-disk_needed() { (( FULL )) && echo 30 || echo 8; }
+installed_dir() { echo "${WORKDIR}/installed/${KREL}"; }
 
 secure_boot_on() {
   command -v mokutil >/dev/null 2>&1 && mokutil --sb-state 2>/dev/null | grep -qi 'enabled'
@@ -113,7 +117,7 @@ platform_name() {
   esac
 }
 
-# live patches loaded that were NOT built by kpatch (e.g. Canonical's lkp_*)
+# live patches loaded that were NOT made by this tool (e.g. Canonical's lkp_*)
 foreign_patches() {
   local d n
   for d in "$SYSFS_LP"/*/; do
@@ -139,6 +143,8 @@ cmd_check() {
 
   [[ $(cfg_val CONFIG_LIVEPATCH) == y ]] && ok "CONFIG_LIVEPATCH=y" \
     || { bad "CONFIG_LIVEPATCH not enabled — this kernel cannot be live patched"; fail=1; }
+  [[ $(cfg_val CONFIG_KLP_BUILD) == y ]] && ok "CONFIG_KLP_BUILD=y (klp-build can make patches for this kernel)" \
+    || { bad "CONFIG_KLP_BUILD not enabled — klp-build needs a kernel >= 6.19 built with it"; fail=1; }
   if [[ $(cfg_val CONFIG_DYNAMIC_FTRACE_WITH_REGS) == y || $(cfg_val CONFIG_DYNAMIC_FTRACE_WITH_ARGS) == y ]]; then
     ok "dynamic ftrace (WITH_REGS/ARGS) available"
   else bad "dynamic ftrace with regs/args missing"; fail=1; fi
@@ -148,24 +154,24 @@ cmd_check() {
   [[ -d $SYSFS_LP ]] && ok "${SYSFS_LP} present" \
     || { bad "${SYSFS_LP} missing"; fail=1; }
 
-  # build host (kpatch-build present) or small node that only fetches modules
-  local build_host=1
-  command -v kpatch-build >/dev/null 2>&1 || build_host=0
-
-  # compiler must match the one that built the running kernel
-  local kgcc lgcc
+  # local builds need the same compiler that built the running kernel;
+  # nodes without a compiler just load CI-built modules (fetch / auto)
+  local kgcc lgcc build_host=0
   kgcc=$(sed -n 's/.*(gcc[^)]*) \([0-9][0-9.]*\).*/\1/p' "$PROC_VERSION")
   lgcc=$(gcc -dumpfullversion 2>/dev/null || echo "none")
-  if (( ! build_host )); then
+  if [[ $lgcc == none ]]; then
     ok "fetch mode: no local build toolchain needed (kernel was built with gcc ${kgcc:-?})"
-  elif [[ -n $kgcc && $kgcc == "$lgcc" ]]; then ok "gcc ${lgcc} matches kernel build compiler"
-  else bad "gcc mismatch: kernel built with '${kgcc:-?}', local gcc is '${lgcc}'"; fail=1; fi
+  elif [[ -n $kgcc && $kgcc == "$lgcc" ]]; then
+    ok "gcc ${lgcc} matches kernel build compiler (local builds possible)"; build_host=1
+  else
+    warn "gcc mismatch: kernel built with '${kgcc:-?}', local gcc is '${lgcc}' — no local builds; use fetch / auto"
+  fi
 
   # secure boot / module signing
   if secure_boot_on; then
     warn "Secure Boot enabled — patch modules must be signed with an enrolled MOK key"
     case $(mok_state) in
-      enrolled)     ok "MOK key ${MOK_CERT} is enrolled — build will sign modules" ;;
+      enrolled)     ok "MOK key ${MOK_CERT} is enrolled — modules get signed with it" ;;
       pending)      bad "MOK key enrollment is pending — reboot once and confirm it in MOK Manager"; fail=1 ;;
       not-enrolled) bad "MOK key ${MOK_CERT} exists but is not enrolled — run: $0 mok setup"; fail=1 ;;
       missing)      bad "no MOK key at ${MOK_KEY} — run: $0 mok setup"; fail=1 ;;
@@ -175,38 +181,25 @@ cmd_check() {
   [[ -r /sys/kernel/security/lockdown ]] && ok "lockdown: $(< /sys/kernel/security/lockdown)"
 
   if [[ $PLATFORM == ubuntu ]] && command -v canonical-livepatch >/dev/null 2>&1; then
-    warn "Canonical Livepatch is installed — kpatch atomic-replace patches would replace its fixes"
+    warn "Canonical Livepatch is installed — atomic-replace patches from this tool would replace its fixes"
   fi
 
   if (( build_host )); then
     local dpath=$WORKDIR disk
     while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
     disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
-    local need; need=$(disk_needed)
-    if (( disk >= need )); then ok "${disk}G free for ${WORKDIR} ($(build_mode) build needs ~${need}G)"
-    else warn "only ${disk}G free on ${dpath} — $(build_mode) build needs ~${need}G; use 'fetch' (CI-built modules), set PVE_LIVEPATCH_DIR to a larger disk, or run '$0 clean'"
+    if (( disk >= BUILD_DISK_GB )); then ok "${disk}G free for ${WORKDIR} (a build needs ~${BUILD_DISK_GB}G)"
+    else warn "only ${disk}G free on ${dpath} — a build needs ~${BUILD_DISK_GB}G; use 'fetch' / 'auto' (CI-built modules), set PVE_LIVEPATCH_DIR to a larger disk, or run '$0 clean'"
     fi
-    ok "kpatch-build installed (local builds possible)"
   fi
-  if command -v kpatch >/dev/null 2>&1; then ok "kpatch installed (can load patches)"
-  else bad "kpatch not installed — run: $0 setup --minimal"; fail=1; fi
+  if command -v insmod >/dev/null 2>&1; then ok "insmod available (can load patches)"
+  else bad "insmod not found — run: $0 setup --minimal"; fail=1; fi
 
   cmd_status || true
   (( fail == 0 )) && log "${C_G}Ready.${C_0}" || die "host is not ready for live patching (see above)"
 }
 
 # ----------------------------------------------------------------------------- setup
-kpatch_checkout() {
-  mkdir -p "$WORKDIR"
-  if [[ -d $WORKDIR/kpatch/.git ]]; then
-    git -C "$WORKDIR/kpatch" fetch --quiet origin
-  else
-    git clone --quiet "$KPATCH_REPO" "$WORKDIR/kpatch"
-  fi
-  git -C "$WORKDIR/kpatch" checkout --quiet "$KPATCH_REF"
-  git -C "$WORKDIR/kpatch" pull --quiet --ff-only 2>/dev/null || true
-}
-
 cmd_setup() {
   need_root
   local minimal=0
@@ -220,28 +213,17 @@ cmd_setup() {
   apt-get update -qq
   if (( minimal )); then
     log "Installing minimal dependencies (load + sign only, no build toolchain)"
-    apt-get install -y --no-install-recommends git make curl ca-certificates kmod openssl mokutil
-    kpatch_checkout
-    make -C "$WORKDIR/kpatch/kpatch" install
-    make -C "$WORKDIR/kpatch/contrib" install
-    systemctl daemon-reload || true
-    rm -rf "$WORKDIR/kpatch"
-    ok "kpatch loader installed — get modules with: $0 fetch <release-tag>"
+    apt-get install -y --no-install-recommends curl ca-certificates kmod openssl mokutil
+    ok "ready to load CI-built modules: $0 fetch <release-tag>  or  $0 auto enable"
     return 0
   fi
-  log "Installing build dependencies"
+  log "Installing the kernel build toolchain for klp-build"
   apt-get install -y --no-install-recommends \
     git build-essential bc bison flex cpio rsync kmod curl ca-certificates gawk patch \
     patchutils libxxhash-dev \
     libelf-dev libdw-dev elfutils libssl-dev dwarves python3 zstd pkg-config \
     mokutil dpkg-dev
-
-  log "Building kpatch (${KPATCH_REF}) from ${KPATCH_REPO}"
-  kpatch_checkout
-  make -C "$WORKDIR/kpatch" -j"$JOBS"
-  make -C "$WORKDIR/kpatch" install
-  systemctl daemon-reload || true
-  ok "kpatch $(kpatch version 2>/dev/null || echo installed)"
+  ok "build toolchain installed — next: $0 source"
 }
 
 # ----------------------------------------------------------------------------- source
@@ -249,8 +231,8 @@ disk_preflight() {
   local dpath=$WORKDIR disk need
   while [[ ! -d $dpath ]]; do dpath=$(dirname "$dpath"); done
   disk=$(df -BG --output=avail "$dpath" | tail -1 | tr -dc 0-9)
-  need=$(disk_needed)
-  (( disk >= need )) || warn "only ${disk}G free on ${dpath}; $(build_mode) build needs ~${need}G"
+  need=$BUILD_DISK_GB
+  (( disk >= need )) || warn "only ${disk}G free on ${dpath}; a klp-build needs ~${need}G"
 }
 
 running_kernel_pkg() {
@@ -471,12 +453,12 @@ ensure_klp_objtool() {
 
 cmd_build() {
   need_root
-  local patch="" name="" extra=()
+  local patch="" name="" klpargs=()
   while [[ $# -gt 0 ]]; do
     case $1 in
       -n|--name)     name=$2; shift 2 ;;
-      --non-replace) extra+=(--non-replace); shift ;;
-      --full)        FULL=1; shift ;;
+      --non-replace) klpargs+=(--no-replace); shift ;;
+      --full)        FULL=1; shift ;;            # accepted for compatibility: klp-build always builds everything
       -*)            die "unknown build option: $1" ;;
       *)             patch=$1; shift ;;
     esac
@@ -497,82 +479,32 @@ cmd_build() {
   patch=$(readlink -f "$patch")
 
   log "Dry-run applying patch to the ${PLATFORM} source"
-  ( cd "$src" && patch --dry-run --batch -p1 < "$patch" >/dev/null ) \
-    || die "patch does not apply cleanly to the ${KREL} source — backport it first"
+  # --forward: a fix that is already in this kernel is reported, not silently reversed
+  ( cd "$src" && patch --dry-run --forward --batch -p1 < "$patch" >/dev/null ) \
+    || die "patch does not apply cleanly to the ${KREL} source (already included, or needs a backport)"
 
   [[ -n $name ]] || name=$(basename "$patch" .patch)
   name=$(echo "$name" | tr -c 'A-Za-z0-9_\n' '_' | cut -c1-40)
-  local engine
-  case ${LP_ENGINE:-auto} in
-    kpatch|klp-build) engine=$LP_ENGINE ;;
-    auto)
-      # Kernels >= 6.19 ship their own builder (scripts/livepatch/klp-build).
-      # It is required on x86 kernels with IBT (Ubuntu, Proxmox): objtool runs
-      # only at vmlinux link time there, which kpatch-build cannot handle.
-      if [[ -x $src/scripts/livepatch/klp-build ]] && grep -qx 'CONFIG_KLP_BUILD=y' "$src/.config" 2>/dev/null; then
-        engine=klp-build
-      else
-        engine=kpatch
-      fi ;;
-    *) die "LP_ENGINE must be auto, kpatch or klp-build" ;;
-  esac
 
-  if [[ $engine == klp-build ]]; then
-    [[ -x $src/scripts/livepatch/klp-build ]] || die "this kernel source has no scripts/livepatch/klp-build"
-    FULL=1                                    # klp-build always builds vmlinux + modules
-    disk_preflight
-    ensure_klp_objtool "$src"
-    log "Building livepatch-${name}.ko with the kernel's own klp-build (-j${JOBS}, vmlinux + modules)"
-    log "it compiles the original and the patched kernel — the first run takes a long time"
-    local klpargs=(-j "$JOBS" -o "$WORKDIR/out/$KREL/livepatch-${name}.ko")
-    [[ " ${extra[*]} " == *" --non-replace "* ]] && klpargs+=(--no-replace)
-    local blog="$WORKDIR/out/$KREL/klp-build-${name}.log"
-    # OBJTOOL: some distro copies of klp-build (e.g. Proxmox/Ubuntu 7.0) use it
-    # without defining it; upstream sets the same path itself.
-    if ! ( cd "$src" && OBJTOOL="$src/tools/objtool/objtool" ./scripts/livepatch/klp-build "${klpargs[@]}" "$patch" ) 2>&1 | tee "$blog"; then
-      grep -q 'no changes detected' "$blog" \
-        && die "klp-build found no changed functions — does the patch touch code built into this kernel?"
-      die "klp-build failed — see ${blog} (work files in ${src}/klp-tmp)"
-    fi
-  else
-    need_cmd kpatch-build
-    (( FULL )) || extra+=(-t vmlinux)
-    disk_preflight
-    log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}, $(build_mode): $( (( FULL )) && echo 'vmlinux + modules' || echo 'vmlinux only'))"
-    log "first run compiles the original kernel, later runs only what the patch changes"
+  # Kernels >= 6.19 ship their own builder (scripts/livepatch/klp-build).
+  [[ -x $src/scripts/livepatch/klp-build ]] && grep -qx 'CONFIG_KLP_BUILD=y' "$src/.config" 2>/dev/null \
+    || die "${KREL} has no klp-build support: it needs a kernel >= 6.19 built with CONFIG_KLP_BUILD=y"
 
-    # kpatch-build -s needs the ORIGINAL kernel image (the reference for the
-    # running kernel) already compiled in the source tree. Build it once.
-    if [[ ! -f $src/vmlinux ]]; then
-      local vlog="$WORKDIR/out/$KREL/vmlinux-build.log"
-      log "Compiling the original vmlinux (first build only — the longest step)"
-      if ! make -C "$src" -j"$JOBS" vmlinux > "$vlog" 2>&1; then
-        tail -n 25 "$vlog" >&2
-        die "compiling the original vmlinux failed — see ${vlog}"
-      fi
-      ok "original vmlinux built"
-    fi
-    # kpatch-build copies Module.symvers after its build. A vmlinux-only build
-    # (small mode) only writes vmlinux.symvers; for a patch to built-in code the
-    # vmlinux exports are exactly what the patch module links against.
-    if (( ! FULL )) && [[ ! -f $src/Module.symvers && -f $src/vmlinux.symvers ]]; then
-      cp "$src/vmlinux.symvers" "$src/Module.symvers"
-      ok "Module.symvers seeded from vmlinux.symvers (small mode)"
-    fi
-
-    local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
-    if ! ( cd "$WORKDIR/out/$KREL" && \
-           kpatch-build -s "$src" -c "$KCONFIG" -j "$JOBS" -n "$name" "${extra[@]}" "$patch" ) 2>&1 | tee "$blog"; then
-      if (( ! FULL )) && grep -q 'no changed objects found' "$blog"; then
-        die "the patch only changes code in kernel modules, which small mode does not build — rerun with: $0 build ${patch} --name ${name} --full  (needs ~30G)"
-      fi
-      die "kpatch-build failed — see ${blog} and ~/.kpatch/build.log"
-    fi
-  fi
-
+  disk_preflight
+  ensure_klp_objtool "$src"
+  log "Building livepatch-${name}.ko with the kernel's own klp-build (-j${JOBS}, vmlinux + modules)"
+  log "it compiles the original and the patched kernel — the first run takes a long time"
   local ko="$WORKDIR/out/$KREL/livepatch-${name}.ko"
-  [[ -f $ko ]] || ko=$(ls -t "$WORKDIR/out/$KREL"/*.ko 2>/dev/null | head -1)
-  [[ -f $ko ]] || die "${engine} finished but no .ko found"
+  local blog="$WORKDIR/out/$KREL/klp-build-${name}.log"
+  # OBJTOOL: some distro copies of klp-build (e.g. Proxmox/Ubuntu 7.0) use it
+  # without defining it; upstream sets the same path itself.
+  if ! ( cd "$src" && OBJTOOL="$src/tools/objtool/objtool" \
+         ./scripts/livepatch/klp-build -j "$JOBS" -o "$ko" "${klpargs[@]}" "$patch" ) 2>&1 | tee "$blog"; then
+    grep -q 'no changes detected' "$blog" \
+      && die "klp-build found no changed functions — does the patch touch code built into this kernel?"
+    die "klp-build failed — see ${blog} (work files in ${src}/klp-tmp)"
+  fi
+  [[ -f $ko ]] || die "klp-build finished but ${ko} is missing"
 
   if [[ -r $MOK_KEY && -r $MOK_CERT ]]; then
     sign_module "$ko"
@@ -618,27 +550,14 @@ sign_module() {
   ok "signed $(basename "$ko") with ${MOK_CERT}"
 }
 
-# ----------------------------------------------------------------------------- fetch
-# Download a module that GitHub Actions built (see .github/workflows/build-livepatch.yml).
-# Release tags look like lp-<name>-<kernel>, assets livepatch-<name>-<kernel>.ko + SHA256SUMS.
-cmd_fetch() {
-  need_root; need_cmd curl
-  local ref=${1:-} name url sums="" asset out ko want have
-  [[ -n $ref ]] || die "usage: $0 fetch <release-tag|URL-to-.ko>"
-  out="$WORKDIR/out/$KREL"; mkdir -p "$out"
 
-  if [[ $ref =~ ^https?:// ]]; then
-    url=$ref
-    asset=$(basename "${url%%\?*}")
-    name=${asset%.ko}; name=${name#livepatch-}; name=${name%-"$KREL"}
-  else
-    [[ $ref == lp-* ]] || die "'${ref}' is not a live-patch release tag (expected lp-<name>-${KREL})"
-    [[ $ref == *-"$KREL" ]] || die "release '${ref}' was not built for this kernel (${KREL})"
-    name=${ref#lp-}; name=${name%-"$KREL"}
-    asset="livepatch-${name}-${KREL}.ko"
-    url="https://github.com/${RELEASE_REPO}/releases/download/${ref}/${asset}"
-    sums="https://github.com/${RELEASE_REPO}/releases/download/${ref}/SHA256SUMS"
-  fi
+# ----------------------------------------------------------------------------- fetch
+# Download a module that GitHub Actions built (see .github/workflows/build-livepatch.yml),
+# check it and sign it. Sets FETCHED_KO.
+#   fetch_verified <url> <SHA256SUMS-url|""> <asset-file-name> <name>
+fetch_verified() {
+  local url=$1 sums=$2 asset=$3 name=$4 out ko want have
+  out="$WORKDIR/out/$KREL"; mkdir -p "$out"
   name=$(echo "$name" | tr -c 'A-Za-z0-9_\n' '_' | cut -c1-40)
   ko="$out/livepatch-${name}.ko"
 
@@ -669,32 +588,228 @@ cmd_fetch() {
   else
     warn "no MOK key — module left unsigned (fine while Secure Boot is off)"
   fi
-  ok "ready: ${ko}"
-  echo "  load it with: $0 apply ${ko} --persist" >&2
-  echo "$ko"
+  FETCHED_KO=$ko
+}
+
+# Release tags look like lp-<name>-<kernel>, assets livepatch-<name>-<kernel>.ko + SHA256SUMS.
+cmd_fetch() {
+  need_root; need_cmd curl
+  local ref=${1:-} name url sums="" asset
+  [[ -n $ref ]] || die "usage: $0 fetch <release-tag|URL-to-.ko>"
+
+  if [[ $ref =~ ^https?:// ]]; then
+    url=$ref
+    asset=$(basename "${url%%\?*}")
+    name=${asset%.ko}; name=${name#livepatch-}; name=${name%-"$KREL"}
+  else
+    [[ $ref == lp-* ]] || die "'${ref}' is not a live-patch release tag (expected lp-<name>-${KREL})"
+    [[ $ref == *-"$KREL" ]] || die "release '${ref}' was not built for this kernel (${KREL})"
+    [[ $ref != "lp-auto-${KREL}" ]] || die "automatic patches are handled by: $0 auto"
+    name=${ref#lp-}; name=${name%-"$KREL"}
+    asset="livepatch-${name}-${KREL}.ko"
+    url="https://github.com/${RELEASE_REPO}/releases/download/${ref}/${asset}"
+    sums="https://github.com/${RELEASE_REPO}/releases/download/${ref}/SHA256SUMS"
+  fi
+  fetch_verified "$url" "$sums" "$asset" "$name"
+  ok "ready: ${FETCHED_KO}"
+  echo "  load it with: $0 apply ${FETCHED_KO} --persist" >&2
+  echo "$FETCHED_KO"
+}
+
+# ----------------------------------------------------------------------------- auto
+# GitHub Actions (.github/workflows/auto-livepatch.yml) builds one cumulative
+# live patch from patches/auto/ for every new Proxmox kernel and publishes it
+# as release lp-auto-<kernel>, asset livepatch-auto_<patchset-id>-<kernel>.ko.
+# The id changes whenever the patch set changes, so a new module never clashes
+# with the loaded one and atomically replaces it.
+readonly AUTO_UNIT=pve-livepatch-auto
+
+auto_run() {
+  need_cmd curl
+  local tag="lp-auto-${KREL}" base sums asset name mod f
+  base="https://github.com/${RELEASE_REPO}/releases/download/${tag}"
+  sums=$(mktemp)
+  log "Looking for ${tag} in ${RELEASE_REPO}"
+  if ! curl -fsSL "$base/SHA256SUMS" -o "$sums"; then
+    rm -f "$sums"
+    ok "no automatic live patch for ${KREL} (not published yet, or no network) — nothing to do"
+    return 0
+  fi
+  asset=$(awk '{n=$2; sub(/^[*]/,"",n); sub(/^[.][/]/,"",n)} n ~ /^livepatch-auto_[0-9a-f]+-.*[.]ko$/ {print n}' "$sums" | head -1)
+  rm -f "$sums"
+  if [[ -z $asset ]]; then
+    ok "nothing to patch: every fix in the patch set is already part of ${KREL}"
+    return 0
+  fi
+  name=${asset#livepatch-}; name=${name%-"$KREL".ko}
+  [[ $name =~ ^auto_[0-9a-f]+$ && $asset == "livepatch-${name}-${KREL}.ko" ]] \
+    || die "unexpected file ${asset} in release ${tag}"
+  mod="livepatch_${name}"
+  if [[ -d $SYSFS_LP/$mod ]]; then
+    ok "up to date: ${mod} is loaded"
+    return 0
+  fi
+
+  fetch_verified "$base/$asset" "$base/SHA256SUMS" "$asset" "$name"
+  ASSUME_YES=1 cmd_apply "$FETCHED_KO" --persist
+  # the new module replaced the older automatic ones: stop loading those at boot
+  for f in "$(installed_dir)"/livepatch-auto_*.ko "$WORKDIR/out/$KREL"/livepatch-auto_*.ko; do
+    if [[ -e $f && $(basename "$f") != "livepatch-${name}.ko" ]]; then rm -f "$f"; fi
+  done
+  ok "automatic live patch ${mod} is active"
+}
+
+auto_enable() {
+  write_boot_unit
+  cat > "$SYSTEMD_DIR/${AUTO_UNIT}.service" <<EOF
+[Unit]
+Description=Fetch and load the automatic live patch for the running kernel
+Wants=network-online.target
+After=network-online.target pve-livepatch.service
+
+[Service]
+Type=oneshot
+ExecStart=${SELF} -y auto run
+EOF
+  cat > "$SYSTEMD_DIR/${AUTO_UNIT}.timer" <<EOF
+[Unit]
+Description=Check for new automatic live patches (pve-livepatch)
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=6h
+RandomizedDelaySec=30min
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+  systemctl daemon-reload || true
+  systemctl enable pve-livepatch.service >/dev/null 2>&1 || warn "could not enable pve-livepatch.service"
+  systemctl enable --now "${AUTO_UNIT}.timer" || die "could not enable ${AUTO_UNIT}.timer"
+  ok "automatic live patching on: checks ${RELEASE_REPO} at boot and every 6 hours"
+  echo "  run it now:   $0 auto run"
+  echo "  see the log:  journalctl -u ${AUTO_UNIT}.service"
+}
+
+auto_disable() {
+  systemctl disable --now "${AUTO_UNIT}.timer" >/dev/null 2>&1 || true
+  rm -f "$SYSTEMD_DIR/${AUTO_UNIT}.service" "$SYSTEMD_DIR/${AUTO_UNIT}.timer"
+  systemctl daemon-reload || true
+  ok "automatic live patching off (patches that are loaded stay loaded; '$0 remove <name>' unloads one)"
+}
+
+cmd_auto() {
+  need_root
+  local action=${1:-run}
+  case $action in
+    run)     auto_run ;;
+    enable)  auto_enable ;;
+    disable) auto_disable ;;
+    *)       die "usage: $0 auto [run|enable|disable]" ;;
+  esac
 }
 
 # ----------------------------------------------------------------------------- clean
 cmd_clean() {
   need_root
   local d targets=() size
-  for d in "$WORKDIR/src" "$WORKDIR/ubuntu-src" "$WORKDIR/pve-kernel" "${HOME:-/root}/.kpatch"; do
+  for d in "$WORKDIR/src" "$WORKDIR/ubuntu-src" "$WORKDIR/pve-kernel"; do
     [[ -e $d ]] && targets+=("$d")
   done
   if (( ${#targets[@]} == 0 )); then ok "nothing to clean"; return 0; fi
   size=$(du -sch "${targets[@]}" 2>/dev/null | tail -1 | cut -f1)
   log "Will delete kernel sources and build trees (${size}):"
   printf '    %s\n' "${targets[@]}"
-  echo "  Kept: built modules in ${WORKDIR}/out, downloaded patches, kpatch itself."
+  echo "  Kept: built and installed modules, downloaded patches."
   echo "  The next build needs '$0 source' again and recompiles the kernel."
   confirm "Delete them?" || die "aborted"
   rm -rf "${targets[@]}"
   ok "freed ${size}"
 }
 
+# ----------------------------------------------------------------------------- loading
+# Plain kernel interfaces, no extra tools: insmod loads and enables a live-patch
+# module; /sys/kernel/livepatch/<mod>/{enabled,transition} show its state.
+module_name() {
+  local n; n=$(modinfo -F name "$1" 2>/dev/null || true)
+  [[ -n $n ]] || n=$(basename "$1" .ko | tr - _)
+  echo "$n"
+}
+
+# wait until <mod> finished its transition (enabled) — 0 ok, 1 timeout
+wait_enabled() {
+  local d="$SYSFS_LP/$1" i
+  for (( i = 0; i <= LP_WAIT; i++ )); do
+    [[ -f $d/transition && $(< "$d/transition") == 0 ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+# wait until <mod> is disabled and gone from sysfs — 0 ok, 1 timeout
+wait_disabled() {
+  local d="$SYSFS_LP/$1" i
+  for (( i = 0; i <= LP_WAIT; i++ )); do
+    [[ ! -d $d ]] && return 0
+    [[ $(cat "$d/enabled" 2>/dev/null) == 0 && $(cat "$d/transition" 2>/dev/null) == 0 ]] && return 0
+    sleep 1
+  done
+  return 1
+}
+
+load_module() {
+  local ko=$1 mod; mod=$(module_name "$ko")
+  if [[ -d $SYSFS_LP/$mod ]]; then ok "${mod} is already loaded"; return 0; fi
+  insmod "$ko" || die "insmod $(basename "$ko") failed — see: dmesg | tail"
+  if wait_enabled "$mod"; then ok "${mod} enabled"
+  else warn "${mod} is still in transition (a task is busy in a patched function); check: $0 status"; fi
+}
+
+# modules of patches that an atomic-replace patch disabled: unload them
+unload_replaced() {
+  local m n
+  for m in "$SYS_MODULE"/livepatch_*; do
+    [[ -d $m ]] || continue
+    n=$(basename "$m")
+    [[ -d $SYSFS_LP/$n ]] && continue
+    if rmmod "$n" 2>/dev/null; then ok "unloaded replaced patch module ${n}"; fi
+  done
+}
+
+write_boot_unit() {
+  mkdir -p "$SYSTEMD_DIR"
+  cat > "$SYSTEMD_DIR/pve-livepatch.service" <<EOF
+[Unit]
+Description=Load installed live patches for the running kernel (pve-livepatch)
+After=local-fs.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=${SELF} -y boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+}
+
+# `boot`: load what `apply --persist` installed for this kernel, oldest first
+cmd_boot() {
+  local dir ko n=0; dir=$(installed_dir)
+  [[ -d $dir ]] || { ok "no live patches installed for ${KREL}"; return 0; }
+  while IFS= read -r ko; do
+    [[ -n $ko ]] || continue
+    ( load_module "$ko" ) || warn "could not load $(basename "$ko")"
+    n=$((n+1))
+  done < <(compgen -G "$dir/*.ko" >/dev/null && ls -tr -- "$dir"/*.ko)
+  unload_replaced
+  ok "${n} installed live patch(es) processed for ${KREL}"
+}
+
 # ----------------------------------------------------------------------------- apply
 cmd_apply() {
-  need_root; need_cmd kpatch
+  need_root; need_cmd insmod
   local ko="" persist=0
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -710,7 +825,7 @@ cmd_apply() {
   modinfo -F livepatch "$ko" | grep -qx Y || die "$(basename "$ko") is not a livepatch module"
   if secure_boot_on; then
     [[ -n $(modinfo -F signer "$ko" 2>/dev/null) ]] \
-      || die "Secure Boot is on and $(basename "$ko") is not signed — run '$0 mok setup', then rebuild"
+      || die "Secure Boot is on and $(basename "$ko") is not signed — run '$0 mok setup', then rebuild or fetch again"
     [[ $(mok_state) == enrolled ]] \
       || warn "MOK key is not enrolled (yet) — the kernel will probably reject this module"
   fi
@@ -718,16 +833,19 @@ cmd_apply() {
   local foreign; foreign=$(foreign_patches | tr '\n' ' ')
   if [[ -n $foreign ]] && [[ $(modinfo -F livepatch_replace "$ko" 2>/dev/null || echo Y) != N ]]; then
     warn "other live patches are loaded: ${foreign}"
-    warn "this is an atomic-replace patch and will DISABLE them (rebuild with --non-replace to keep them)"
+    warn "an atomic-replace patch (klp-build's default) DISABLES them (build with --non-replace to keep them)"
   fi
 
   confirm "Load $(basename "$ko") into the RUNNING kernel ${KREL}?" || die "aborted"
   log "Loading live patch"
-  kpatch load "$ko"
+  load_module "$ko"
+  unload_replaced
   if (( persist )); then
-    kpatch install "$ko"
-    systemctl enable --now kpatch.service >/dev/null 2>&1 || warn "could not enable kpatch.service"
-    ok "installed — will be re-applied on boot of ${KREL}"
+    install -D -m 0644 "$ko" "$(installed_dir)/$(basename "$ko")"
+    write_boot_unit
+    systemctl daemon-reload >/dev/null 2>&1 || true
+    systemctl enable pve-livepatch.service >/dev/null 2>&1 || warn "could not enable pve-livepatch.service"
+    ok "installed — loaded again on every boot of ${KREL} (pve-livepatch.service)"
   fi
   cmd_status
 }
@@ -735,7 +853,7 @@ cmd_apply() {
 # ----------------------------------------------------------------------------- status / remove
 cmd_status() {
   log "Live patches on ${KREL}"
-  local d any=0
+  local d any=0 f
   for d in "$SYSFS_LP"/*/; do
     [[ -d $d ]] || continue
     any=1
@@ -743,16 +861,31 @@ cmd_status() {
       "$(cat "$d/enabled")" "$(cat "$d/transition" 2>/dev/null || echo -)"
   done
   (( any )) || echo "  (none loaded)"
-  command -v kpatch >/dev/null 2>&1 && { echo; kpatch list 2>/dev/null | sed 's/^/  /'; }
+  for f in "$(installed_dir)"/*.ko; do
+    [[ -e $f ]] && echo "  loaded at boot: $(basename "$f")"
+  done
+  [[ -e $SYSTEMD_DIR/${AUTO_UNIT}.timer ]] && echo "  automatic updates: on (${AUTO_UNIT}.timer)"
   echo "  taint: $(< /proc/sys/kernel/tainted)"
 }
 
 cmd_remove() {
-  need_root; need_cmd kpatch
+  need_root
   local name=${1:-}; [[ -n $name ]] || die "usage: $0 remove <livepatch_name>"
+  [[ -d $SYSFS_LP/$name || ! -d $SYSFS_LP/livepatch_$name ]] || name="livepatch_$name"
   confirm "Disable and unload live patch '${name}'?" || die "aborted"
-  kpatch unload "$name"
-  kpatch uninstall "$name" 2>/dev/null || true
+  if [[ -d $SYSFS_LP/$name ]]; then
+    log "Disabling ${name}"
+    echo 0 > "$SYSFS_LP/$name/enabled"
+    wait_disabled "$name" || die "${name} is still in transition — try again in a minute"
+    ok "${name} disabled"
+  else
+    warn "${name} is not loaded"
+  fi
+  if [[ -d $SYS_MODULE/$name ]]; then
+    rmmod "$name" && ok "module ${name} unloaded" || warn "could not unload module ${name}"
+  fi
+  local f; f="$(installed_dir)/livepatch-${name#livepatch_}.ko"
+  if [[ -e $f ]]; then rm -f "$f"; ok "no longer loaded at boot"; fi
   cmd_status
 }
 
@@ -825,7 +958,7 @@ cmd_canonical() {
         pro attach "$UBUNTU_PRO_TOKEN" --no-auto-enable
       fi
       if compgen -G "$SYSFS_LP/livepatch_*" >/dev/null; then
-        warn "kpatch live patches are loaded; Canonical Livepatch may replace them"
+        warn "live patches from this tool are loaded; Canonical Livepatch may replace them"
       fi
       log "Enabling Canonical Livepatch"
       pro enable livepatch --assume-yes
@@ -844,12 +977,12 @@ cmd_canonical() {
   esac
 }
 
+
 # ----------------------------------------------------------------------------- all
 cmd_all() {
   local ko
   cmd_check
-  command -v kpatch-build >/dev/null 2>&1 || cmd_setup
-  local a; for a in "$@"; do [[ $a == --full ]] && FULL=1; done
+  { command -v gcc && command -v make && command -v rsync; } >/dev/null 2>&1 || cmd_setup
   [[ -f $(src_dir)/Makefile ]] || cmd_source
   ko=$(cmd_build "$@" | tail -1)
   cmd_apply "$ko" --persist
@@ -858,19 +991,22 @@ cmd_all() {
 usage() {
   cat <<EOF
 pve-livepatch ${SCRIPT_VERSION} — live patch the running kernel (${KREL}) on Proxmox VE / Ubuntu
+with the kernel's own klp-build (kernels >= 6.19 with CONFIG_KLP_BUILD=y)
 
 Usage: $0 [-y] [-j N] <command> [args]
 
   check                               verify the kernel/host can be live patched
-  setup [--minimal]                   install deps and kpatch/kpatch-build
-                                      (--minimal: loader only, for nodes that use 'fetch')
+  setup [--minimal]                   install the kernel build toolchain
+                                      (--minimal: only what loading needs, for fetch/auto)
   fetch <release-tag|URL>             download a CI-built module, verify, sign (no build)
+  auto [run|enable|disable]           automatic live patches built by GitHub Actions for
+                                      every new Proxmox kernel (enable = at boot + every 6 h)
   source [--full]                     fetch + prepare the exact kernel source for ${KREL}
-  build <file.patch|URL> [--name N] [--non-replace] [--full]
+  build <file.patch|URL> [--name N] [--non-replace]
                                       build livepatch-N.ko from a kernel source patch
-  apply <livepatch-*.ko> [--persist]  load into running kernel (persist = reapply on boot)
+  apply <livepatch-*.ko> [--persist]  load into running kernel (persist = load again on boot)
   status                              show loaded live patches
-  remove <name>                       unload a live patch
+  remove <name>                       disable and unload a live patch
   clean                               delete kernel sources/build trees to free disk
   all <file.patch|URL> [--name N]     check → setup → source → build → apply --persist
   mok setup|status                    Secure Boot: create + enroll the module signing key
@@ -879,12 +1015,11 @@ Usage: $0 [-y] [-j N] <command> [args]
 Options:
   -y        don't ask for confirmation
   -j N      parallel build jobs (default: nproc = ${JOBS})
-  --full    full source history and build vmlinux + modules (~30G disk);
-            default is small mode: shallow source, vmlinux only (~8G disk)
+  --full    download the full kernel source history (default: only the needed commit)
 
 Env: PLATFORM (pve|ubuntu, auto-detected), PVE_LIVEPATCH_DIR (${WORKDIR}),
-     PVE_LIVEPATCH_REPO (${RELEASE_REPO}, used by fetch),
-     PVE_COMMIT, KPATCH_REF, MOK_KEY, MOK_CERT, UBUNTU_PRO_TOKEN
+     PVE_LIVEPATCH_REPO (${RELEASE_REPO}, used by fetch/auto),
+     PVE_COMMIT, MOK_KEY, MOK_CERT, UBUNTU_PRO_TOKEN
 
 Example:
   $0 check
@@ -918,6 +1053,8 @@ main() {
     check)     cmd_check ;;
     setup)     cmd_setup "$@" ;;
     fetch)     cmd_fetch "$@" ;;
+    auto)      cmd_auto "$@" ;;
+    boot)      cmd_boot ;;
     source)    cmd_source "$@" ;;
     build)     cmd_build "$@" ;;
     apply)     cmd_apply "$@" ;;

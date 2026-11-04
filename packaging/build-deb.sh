@@ -30,27 +30,44 @@ Priority: optional
 Architecture: all
 Maintainer: Jan Wiebe Klijnsma <janwiebek@gmail.com>
 Depends: bash (>= 4.4), coreutils, kmod, dpkg, sed, gawk | mawk, curl, ca-certificates, openssl
-Recommends: mokutil, git, make
-Suggests: build-essential, bc, bison, flex, cpio, rsync, patch, libelf-dev, libdw-dev, elfutils, libssl-dev, dwarves, python3, zstd, pkg-config, dpkg-dev, ubuntu-pro-client
+Recommends: mokutil
+Suggests: git, build-essential, bc, bison, flex, cpio, rsync, patch, patchutils, libxxhash-dev, libelf-dev, libdw-dev, elfutils, libssl-dev, dwarves, python3, zstd, pkg-config, dpkg-dev, ubuntu-pro-client
 Installed-Size: $(du -sk "$STAGE/usr" | cut -f1)
 Homepage: https://github.com/jwklijnsma/pve-livepatch-kernel
 Description: live patch the running kernel without reboot (Proxmox VE / Ubuntu)
  pve-livepatch fetches the exact source of the running Proxmox VE or Ubuntu
- kernel, builds a kpatch live-patch module from a kernel source patch, signs
- it with the MOK key and loads it without a reboot. On Ubuntu it can also
- enable Canonical Livepatch through Ubuntu Pro.
+ kernel, builds a live-patch module from a kernel source patch with the
+ kernel's own klp-build (kernels >= 6.19), signs it with the MOK key and
+ loads it with insmod, without a reboot. On Ubuntu it can also enable
+ Canonical Livepatch through Ubuntu Pro.
  .
- Small nodes: "pve-livepatch setup --minimal", then "pve-livepatch fetch"
- modules built by GitHub Actions. Build hosts: "pve-livepatch setup"
- installs the kernel build toolchain.
+ Small nodes: "pve-livepatch auto enable" keeps loading the live patch that
+ GitHub Actions builds for every new Proxmox kernel; "pve-livepatch fetch"
+ gets a single one. Build hosts: "pve-livepatch setup" installs the kernel
+ build toolchain.
 EOF
+
+# --- on removal: stop the services pve-livepatch wrote (loaded patches stay loaded)
+cat > "$STAGE/DEBIAN/prerm" <<'EOF'
+#!/bin/sh
+set -e
+if [ "$1" = "remove" ]; then
+    systemctl disable --now pve-livepatch-auto.timer >/dev/null 2>&1 || true
+    systemctl disable pve-livepatch.service >/dev/null 2>&1 || true
+    rm -f /etc/systemd/system/pve-livepatch-auto.timer /etc/systemd/system/pve-livepatch-auto.service \
+          /etc/systemd/system/pve-livepatch.service
+    systemctl daemon-reload >/dev/null 2>&1 || true
+fi
+exit 0
+EOF
+chmod 755 "$STAGE/DEBIAN/prerm"
 
 # --- remove generated state on purge only (never touch it on upgrade)
 cat > "$STAGE/DEBIAN/postrm" <<'EOF'
 #!/bin/sh
 set -e
 if [ "$1" = "purge" ]; then
-    rm -rf /var/lib/pve-livepatch/src /var/lib/pve-livepatch/ubuntu-src
+    rm -rf /var/lib/pve-livepatch/src /var/lib/pve-livepatch/ubuntu-src /var/lib/pve-livepatch/pve-kernel
 fi
 exit 0
 EOF

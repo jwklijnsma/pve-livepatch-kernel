@@ -1,9 +1,11 @@
 name: build live patch
 
-# Builds a live-patch module for a Proxmox VE kernel in GitHub's cloud, like
-# Ubuntu Pro / RHEL do centrally, so nodes only download ~1 MB:
+# Builds a live-patch module for a Proxmox VE kernel in GitHub's cloud with the
+# kernel's own klp-build, like Ubuntu Pro / RHEL do centrally, so nodes only
+# download a small module:
 #   Actions → "build live patch" → Run workflow
 #   then on the node:  pve-livepatch fetch lp-<name>-<kernel>
+# auto-livepatch.yml calls this for every new Proxmox kernel (release lp-auto-<kernel>).
 # Modules are published UNSIGNED; each node signs them with its own MOK key.
 on:
   workflow_dispatch:
@@ -17,13 +19,16 @@ on:
       name:
         description: "Patch name: letters, digits, _ (e.g. cve_2026_1234)"
         required: true
-      full:
-        description: "Also build modules (only needed for fixes in module code)"
-        type: boolean
-        default: false
       dist:
-        description: "Proxmox/Debian release of the node (trixie = PVE 9, bookworm = PVE 8)"
+        description: "Proxmox/Debian release of the node (trixie = PVE 9)"
         default: trixie
+  workflow_call:
+    inputs:
+      kernel: { type: string, required: true }
+      patch:  { type: string, required: true }
+      name:   { type: string, required: true }
+      dist:   { type: string, default: trixie }
+      tag:    { type: string, default: "" }
 
 permissions:
   contents: write
@@ -40,8 +45,8 @@ jobs:
       KERNEL: ${{ inputs.kernel }}
       PATCH:  ${{ inputs.patch }}
       NAME:   ${{ inputs.name }}
-      FULL:   ${{ inputs.full }}
       DIST:   ${{ inputs.dist }}
+      TAG_IN: ${{ inputs.tag }}
     steps:
       - uses: actions/checkout@v7
 
@@ -50,7 +55,9 @@ jobs:
           [[ $KERNEL =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || { echo "::error::kernel must look like 7.0.14-26-pve"; exit 1; }
           [[ $NAME =~ ^[A-Za-z0-9_]{1,40}$ ]]                || { echo "::error::name: letters, digits, _ (max 40)"; exit 1; }
           [[ $DIST =~ ^(trixie|bookworm)$ ]]                 || { echo "::error::dist must be trixie or bookworm"; exit 1; }
-          echo "TAG=lp-${NAME}-${KERNEL}" >> "$GITHUB_ENV"
+          tag=${TAG_IN:-lp-${NAME}-${KERNEL}}
+          [[ $tag =~ ^lp-[A-Za-z0-9_.-]+$ ]]                 || { echo "::error::invalid tag $tag"; exit 1; }
+          echo "TAG=$tag" >> "$GITHUB_ENV"
 
       - name: Free disk space on the runner
         run: |
@@ -73,7 +80,7 @@ jobs:
         run: |
           echo "building in $BUILD_DIR"
           docker run --rm -v "$PWD:/w" -v "$BUILD_DIR:/build" -w /w -e PVE_LIVEPATCH_DIR=/build \
-            "debian:${DIST}" bash ci/build-livepatch.sh "$KERNEL" "$PATCH" "$NAME" "$FULL" "$DIST"
+            "debian:${DIST}" bash ci/build-livepatch.sh "$KERNEL" "$PATCH" "$NAME" "$DIST"
 
       - name: Keep build logs
         if: always()
@@ -82,6 +89,7 @@ jobs:
           name: logs-${{ env.TAG }}
           path: |
             dist/*.log
+            dist/PATCHSET
             ${{ env.BUILD_DIR }}/out/**/*.log
           if-no-files-found: ignore
 
@@ -90,21 +98,32 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           sudo chown -R "$(id -u)" dist
-          cat > notes.md <<EOF
-          Live patch **${NAME}** for Proxmox kernel \`${KERNEL}\` (full build: ${FULL}, Debian ${DIST}).
-          The module is **unsigned**; your node signs it with its own MOK key.
-
-          On a node running \`${KERNEL}\`:
-          \`\`\`bash
-          pve-livepatch fetch ${TAG}
-          pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist
-          \`\`\`
-          EOF
-          assets=(dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/build.log dist/SHA256SUMS)
+          assets=()
+          for f in dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/build.log dist/PATCHSET dist/SHA256SUMS; do
+            [[ -f $f ]] && assets+=("$f")
+          done
+          if [[ $TAG == lp-auto-* ]]; then
+            title="Automatic live patch for ${KERNEL}"
+            if [[ -f dist/livepatch-${NAME}-${KERNEL}.ko ]]; then
+              body="Cumulative live patch \`${NAME}\` built from \`patches/auto/\` for Proxmox kernel \`${KERNEL}\`."
+            else
+              body="Nothing to patch: every fix in \`patches/auto/\` is already part of Proxmox kernel \`${KERNEL}\`."
+            fi
+            run="Nodes with \`pve-livepatch auto enable\` pick this up by themselves (or run \`pve-livepatch auto run\`)."
+            # one release per kernel, always holding the current patch set only
+            gh release delete "$TAG" --cleanup-tag -y >/dev/null 2>&1 || true
+          else
+            title="Live patch ${NAME} for ${KERNEL}"
+            body="Live patch **${NAME}** for Proxmox kernel \`${KERNEL}\` (Debian ${DIST}), built with the kernel's klp-build."
+            run=$(printf '%s\n' '```bash' "pve-livepatch fetch ${TAG}" \
+                  "pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist" '```')
+          fi
+          printf '%s\n\nThe module is **unsigned**; each node signs it with its own MOK key.\n\n%s\n' "$body" "$run" > notes.md
+          [[ -f dist/PATCHSET ]] && { echo; echo '```'; cat dist/PATCHSET; echo '```'; } >> notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
           else
             gh release create "$TAG" "${assets[@]}" --target "$GITHUB_SHA" \
-              --title "Live patch ${NAME} for ${KERNEL}" --notes-file notes.md --latest=false
+              --title "$title" --notes-file notes.md --latest=false
           fi
           gh release view "$TAG" --json url --jq .url

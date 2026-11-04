@@ -1,0 +1,19 @@
+Harmless demo live patch: appends " kpatch_demo=1" to /proc/cmdline.
+
+Use it to test the whole flow (CI build → fetch → sign → apply) before
+patching anything real:
+  cat /proc/cmdline                      # before
+  pve-livepatch apply …/livepatch-demo_cmdline.ko
+  cat /proc/cmdline                      # now ends with " kpatch_demo=1"
+  pve-livepatch remove livepatch_demo_cmdline
+
+--- a/fs/proc/cmdline.c
++++ b/fs/proc/cmdline.c
+@@ -8,6 +8,7 @@
+ static int cmdline_proc_show(struct seq_file *m, void *v)
+ {
+ 	seq_puts(m, saved_command_line);
++	seq_puts(m, " kpatch_demo=1");
+ 	seq_putc(m, '\n');
+ 	return 0;
+ }
