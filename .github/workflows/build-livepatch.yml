@@ -124,7 +124,12 @@ jobs:
             run=$(printf '%s\n' '```bash' "pve-livepatch fetch ${TAG}" \
                   "pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist" '```')
           fi
-          printf '%s\n\nSigned on GitHub with the certificate in release `signing-cert` (enroll it once per node: `pve-livepatch mok setup`).\n\n%s\n' "$body" "$run" > notes.md
+          if [[ -f dist/module-signing.der ]]; then
+            sig='Signed on GitHub with the certificate in release `signing-cert` (enroll it once per node: `pve-livepatch mok setup`).'
+          else
+            sig='**Unsigned** (no `MODULE_SIGNING_PEM` secret): loads only on nodes with Secure Boot off.'
+          fi
+          printf '%s\n\n%s\n\n%s\n' "$body" "$sig" "$run" > notes.md
           [[ -f dist/PATCHSET ]] && { echo; echo '```'; cat dist/PATCHSET; echo '```'; } >> notes.md
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
