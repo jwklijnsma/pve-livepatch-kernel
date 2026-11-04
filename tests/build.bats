@@ -225,6 +225,37 @@ touch "$out"; echo "SUCCESS"
 K
   chmod +x "$SRC/scripts/livepatch/klp-build"
   echo "CONFIG_KLP_BUILD=y" > "$SRC/.config"
+  printf 'VERSION = 6\nPATCHLEVEL = 8\nSUBLEVEL = 12\nEXTRAVERSION = -4-pve\n' > "$SRC/Makefile"
+  mkdir -p "$SRC/tools/objtool"
+  echo "distro objtool" > "$SRC/tools/objtool/Makefile"
+  # `make -C <src> tools/objtool`: builds a fake objtool; with FAKE_OBJTOOL_BROKEN
+  # the distro copy fails to compile (like Proxmox 7.0), the upstream copy works
+  stub make '
+log_call make "$@"
+src=$2
+if [[ " $* " == *" tools/objtool "* ]]; then
+  if [[ -n ${FAKE_OBJTOOL_BROKEN:-} ]] && ! grep -q upstream "$src/tools/objtool/Makefile"; then
+    echo "klp-checksum.c:73:31: error: implicit declaration of function insn_reloc" >&2; exit 2
+  fi
+  printf "#!/bin/sh\necho \"usage: objtool klp diff|post-link\"\n" > "$src/tools/objtool/objtool"
+  chmod +x "$src/tools/objtool/objtool"
+fi
+exit 0'
+}
+
+# local stand-in for kernel.org: tag v6.8.12 with upstream objtool + klp-build
+upstream_repo() {
+  local r="$BATS_TEST_TMPDIR/upstream-linux"
+  git init -q "$r"
+  mkdir -p "$r/tools/objtool" "$r/scripts/livepatch"
+  echo "upstream objtool" > "$r/tools/objtool/Makefile"
+  cp "$SRC/scripts/livepatch/klp-build" "$r/scripts/livepatch/klp-build"
+  echo "# upstream" >> "$r/scripts/livepatch/klp-build"
+  git -C "$r" add -A
+  git -C "$r" -c user.name=t -c user.email=t@t commit -q -m upstream
+  git -C "$r" tag "${1:-v6.8.12}"
+  git -C "$r" config uploadpack.allowFilter true
+  export UPSTREAM_KERNEL_GIT="file://$r"
 }
 
 @test "uses the kernel's klp-build when the source has it and KLP_BUILD=y" {
@@ -239,6 +270,46 @@ K
   assert_called "OBJTOOL=$SRC/tools/objtool/objtool"
   [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko" ]]
   [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/klp-build-fix1.log" ]]
+}
+
+@test "klp-build: healthy distro objtool is used as is (no upstream fetch)" {
+  klp_src
+  upstream_repo
+  run lp build "$PATCH" --name fix1
+  assert_success
+  assert_output_contains "objtool ready"
+  refute_output_contains "upstream"
+  grep -q "distro objtool" "$SRC/tools/objtool/Makefile"
+}
+
+@test "klp-build: broken distro objtool is replaced by the upstream stable copy" {
+  klp_src
+  upstream_repo v6.8.12
+  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  assert_success
+  assert_output_contains "insn_reloc"
+  assert_output_contains "using upstream objtool + klp-build (v6.8.12 from file://"
+  assert_output_contains "objtool ready (upstream)"
+  grep -q "upstream objtool" "$SRC/tools/objtool/Makefile"
+  grep -q "# upstream" "$SRC/scripts/livepatch/klp-build"
+  [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko" ]]
+}
+
+@test "klp-build: falls back to the major.minor tag when the stable tag is missing" {
+  klp_src
+  upstream_repo v6.8
+  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  assert_success
+  assert_output_contains "(v6.8 from file://"
+}
+
+@test "klp-build: clear error when no upstream copy can be fetched" {
+  klp_src
+  export UPSTREAM_KERNEL_GIT="file://$BATS_TEST_TMPDIR/does-not-exist"
+  FAKE_OBJTOOL_BROKEN=1 run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "could not fetch upstream 6.8.12 objtool/klp-build"
+  refute_called_match "^klp-build"
 }
 
 @test "klp-build gets --no-replace for --non-replace" {

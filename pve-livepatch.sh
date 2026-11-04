@@ -33,11 +33,12 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.5.1"
+readonly SCRIPT_VERSION="1.5.2"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
 readonly KPATCH_REF="${KPATCH_REF:-master}"
+readonly UPSTREAM_KERNEL_GIT="${UPSTREAM_KERNEL_GIT:-https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git https://github.com/gregkh/linux.git}"
 readonly RELEASE_REPO="${PVE_LIVEPATCH_REPO:-jwklijnsma/pve-livepatch-kernel}"   # where `fetch` downloads from
 # paths are overridable so the test suite can point them at fixtures
 KREL="${KREL:-$(uname -r)}"; readonly KREL
@@ -413,6 +414,61 @@ cmd_source() {
 }
 
 # ----------------------------------------------------------------------------- build
+# upstream base version of a prepared tree, e.g. 7.0.14
+tree_base_version() {
+  awk -F' *= *' '$1=="VERSION"{v=$2} $1=="PATCHLEVEL"{p=$2} $1=="SUBLEVEL"{s=$2} END{print v"."p"."s}' "$1/Makefile"
+}
+
+objtool_has_klp() {
+  local o="$1/tools/objtool/objtool"
+  [[ -x $o ]] && ! "$o" klp 2>&1 | grep -q 'not implemented'
+}
+
+# Replace tools/objtool + scripts/livepatch with the matching upstream stable
+# versions. Used when a distro tree carries a partial klp-build backport whose
+# objtool does not compile with live-patch support (seen in Proxmox 7.0).
+use_upstream_klp_tools() {
+  local src=$1 base t url tag ok_fetch=""
+  base=$(tree_base_version "$src")
+  t=$(mktemp -d)
+  git -C "$t" init -q
+  git -C "$t" config core.sparseCheckout true
+  printf 'tools/objtool/\nscripts/livepatch/\n' > "$t/.git/info/sparse-checkout"
+  for tag in "v${base}" "v${base%.*}"; do
+    for url in $UPSTREAM_KERNEL_GIT; do
+      if git -C "$t" fetch -q --depth 1 --filter=blob:none "$url" tag "$tag" 2>/dev/null; then
+        ok_fetch="$tag from $url"; break 2
+      fi
+    done
+  done
+  [[ -n $ok_fetch ]] || { rm -rf "$t"; die "could not fetch upstream ${base} objtool/klp-build (tried: ${UPSTREAM_KERNEL_GIT})"; }
+  git -C "$t" checkout -q FETCH_HEAD
+  [[ -f $t/tools/objtool/Makefile && -x $t/scripts/livepatch/klp-build ]] \
+    || { rm -rf "$t"; die "upstream ${ok_fetch} has no klp-build"; }
+  rm -rf "$src/tools/objtool" "$src/scripts/livepatch"
+  cp -a "$t/tools/objtool" "$src/tools/objtool"
+  cp -a "$t/scripts/livepatch" "$src/scripts/livepatch"
+  rm -rf "$t"
+  warn "using upstream objtool + klp-build (${ok_fetch}) — this tree's copies don't build with live-patch support"
+}
+
+# klp-build needs objtool built with live-patch support (libxxhash).
+ensure_klp_objtool() {
+  local src=$1 olog="$WORKDIR/out/$KREL/objtool-build.log"
+  log "Building objtool with live-patch support"
+  if make -C "$src" -j"$JOBS" tools/objtool > "$olog" 2>&1 && objtool_has_klp "$src"; then
+    ok "objtool ready"; return 0
+  fi
+  grep -E 'error' "$olog" | head -n 5 >&2 || true
+  warn "this kernel tree's objtool does not build with live-patch support (log: ${olog})"
+  use_upstream_klp_tools "$src"
+  if ! make -C "$src" -j"$JOBS" tools/objtool > "$olog" 2>&1 || ! objtool_has_klp "$src"; then
+    tail -n 25 "$olog" >&2
+    die "objtool still has no live-patch support — is libxxhash-dev installed? (log: ${olog})"
+  fi
+  ok "objtool ready (upstream)"
+}
+
 cmd_build() {
   need_root
   local patch="" name="" extra=()
@@ -465,6 +521,7 @@ cmd_build() {
     [[ -x $src/scripts/livepatch/klp-build ]] || die "this kernel source has no scripts/livepatch/klp-build"
     FULL=1                                    # klp-build always builds vmlinux + modules
     disk_preflight
+    ensure_klp_objtool "$src"
     log "Building livepatch-${name}.ko with the kernel's own klp-build (-j${JOBS}, vmlinux + modules)"
     log "it compiles the original and the patched kernel — the first run takes a long time"
     local klpargs=(-j "$JOBS" -o "$WORKDIR/out/$KREL/livepatch-${name}.ko")
