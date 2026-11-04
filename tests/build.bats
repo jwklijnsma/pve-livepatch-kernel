@@ -210,3 +210,81 @@ cp "$FAKE_PATCH" "$out"'
   assert_success
   assert_output_contains "NOT signed"
 }
+
+# --- in-kernel klp-build engine (kernels >= 6.19, required with IBT) -----------
+
+klp_src() {
+  mkdir -p "$SRC/scripts/livepatch"
+  cat > "$SRC/scripts/livepatch/klp-build" <<'K'
+#!/usr/bin/env bash
+echo "klp-build $* (cwd=$PWD)" >> "$STUB_LOG"
+[[ -n ${FAKE_KLP_FAIL:-} ]] && { echo "$FAKE_KLP_FAIL" >&2; exit 1; }
+out=""; while [[ $# -gt 0 ]]; do [[ $1 == -o ]] && { out=$2; shift; }; shift; done
+touch "$out"; echo "SUCCESS"
+K
+  chmod +x "$SRC/scripts/livepatch/klp-build"
+  echo "CONFIG_KLP_BUILD=y" > "$SRC/.config"
+}
+
+@test "uses the kernel's klp-build when the source has it and KLP_BUILD=y" {
+  klp_src
+  rm -f "$STUB_BIN/kpatch-build"          # not needed for this engine
+  rm "$SRC/vmlinux"                        # klp-build compiles everything itself
+  run lp -j 3 build "$PATCH" --name fix1
+  assert_success
+  assert_called "klp-build -j 3 -o $PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko $PATCH (cwd=$SRC)"
+  assert_output_contains "the kernel's own klp-build"
+  refute_output_contains "original vmlinux"
+  [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko" ]]
+  [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/klp-build-fix1.log" ]]
+}
+
+@test "klp-build gets --no-replace for --non-replace" {
+  klp_src
+  run lp build "$PATCH" --name fix1 --non-replace
+  assert_success
+  grep -q -- "-o $PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko --no-replace $PATCH" "$STUB_LOG"
+}
+
+@test "falls back to kpatch-build when CONFIG_KLP_BUILD is not set" {
+  klp_src
+  echo "# CONFIG_KLP_BUILD is not set" > "$SRC/.config"
+  run lp build "$PATCH" --name fix1
+  assert_success
+  grep -q '^kpatch-build ' "$STUB_LOG"
+  refute_called_match "^klp-build"
+}
+
+@test "LP_ENGINE=kpatch forces kpatch-build" {
+  klp_src
+  LP_ENGINE=kpatch run lp build "$PATCH" --name fix1
+  assert_success
+  grep -q '^kpatch-build ' "$STUB_LOG"
+  refute_called_match "^klp-build"
+}
+
+@test "LP_ENGINE=klp-build without klp-build in the source fails clearly" {
+  LP_ENGINE=klp-build run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "has no scripts/livepatch/klp-build"
+}
+
+@test "invalid LP_ENGINE is rejected" {
+  LP_ENGINE=magic run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "LP_ENGINE must be auto, kpatch or klp-build"
+}
+
+@test "klp-build 'no changes detected' gets a clear message" {
+  klp_src
+  FAKE_KLP_FAIL="error: klp-build: no changes detected" run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "found no changed functions"
+}
+
+@test "other klp-build failures point at its log" {
+  klp_src
+  FAKE_KLP_FAIL="error: klp-build: original kernel build failed" run lp build "$PATCH" --name fix1
+  assert_failure
+  assert_output_contains "klp-build failed — see $PVE_LIVEPATCH_DIR/out/$KREL/klp-build-fix1.log"
+}

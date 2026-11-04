@@ -146,7 +146,7 @@ cp "$f" "$out"'
   run lp setup
   assert_success
   local inst; inst=$(grep '^apt-get install' "$STUB_LOG")
-  for pkg in build-essential gawk patch bison flex libelf-dev libssl-dev dwarves rsync; do
+  for pkg in build-essential gawk patch patchutils libxxhash-dev bison flex libelf-dev libssl-dev dwarves rsync; do
     [[ " $inst " == *" $pkg "* ]] || { echo "missing $pkg in: $inst"; return 1; }
   done
   assert_called "make -C $PVE_LIVEPATCH_DIR/kpatch install"

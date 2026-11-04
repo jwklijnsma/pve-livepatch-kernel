@@ -8,7 +8,7 @@
 #   patch   kernel source patch: URL or path (relative to the repo root is fine)
 #   name    module name: letters, digits, _ (max 40)
 #
-# Output in dist/: livepatch-<name>-<kernel>.ko, <name>.patch, kpatch-build.log, SHA256SUMS
+# Output in dist/: livepatch-<name>-<kernel>.ko, <name>.patch, build.log, SHA256SUMS
 set -Eeuo pipefail
 
 KERNEL=${1:?kernel release required, e.g. 7.0.14-26-pve}
@@ -31,7 +31,7 @@ on_exit() {
   local rc=$? klog="${HOME:-/root}/.kpatch/build.log"
   cp -f "$klog" "$DIST_DIR/kpatch-build-internal.log" 2>/dev/null || true
   if (( rc != 0 )); then
-    for f in "$klog" "$PVE_LIVEPATCH_DIR"/out/*/vmlinux-build.log; do
+    for f in "$klog" "$PVE_LIVEPATCH_DIR"/out/*/*-build*.log; do
       [[ -s $f ]] || continue
       echo "::group::errors in $f"
       grep -nE 'error|Error|ERROR|\*\*\*|undefined reference|No such file' "$f" | tail -n 40 || true
@@ -112,7 +112,7 @@ log "Building live patch ${NAME}"
 # --- 4. release assets -----------------------------------------------------------------
 out="$PVE_LIVEPATCH_DIR/out/$KERNEL"
 cp "$out/livepatch-${NAME}.ko" "$DIST_DIR/livepatch-${NAME}-${KERNEL}.ko"
-cp "$out/kpatch-build-${NAME}.log" "$DIST_DIR/kpatch-build.log"
+cp "$(ls -t "$out"/*-build-"${NAME}".log | head -1)" "$DIST_DIR/build.log"
 if [[ $PATCH =~ ^https?:// ]]; then
   cp "$(ls -t "$PVE_LIVEPATCH_DIR"/patches/*.patch | head -1)" "$DIST_DIR/${NAME}.patch"
 else

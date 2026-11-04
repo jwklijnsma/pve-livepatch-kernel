@@ -35,7 +35,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 300
+    timeout-minutes: 360
     env:
       KERNEL: ${{ inputs.kernel }}
       PATCH:  ${{ inputs.patch }}
@@ -58,11 +58,21 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache \
                       /usr/local/share/boost /usr/local/.ghcup /usr/share/swift || true
           sudo docker image prune -af >/dev/null || true
-          df -h /
+          df -h / /mnt 2>/dev/null || df -h /
+          # build on whichever disk has more room (hosted runners often have a big /mnt)
+          root_free=$(df -BG --output=avail / | tail -1 | tr -dc 0-9)
+          mnt_free=$(df -BG --output=avail /mnt 2>/dev/null | tail -1 | tr -dc 0-9); mnt_free=${mnt_free:-0}
+          if (( mnt_free > root_free )); then
+            sudo mkdir -p /mnt/lpbuild && sudo chown "$(id -u)" /mnt/lpbuild
+            echo "BUILD_DIR=/mnt/lpbuild" >> "$GITHUB_ENV"
+          else
+            mkdir -p "$PWD/_build"; echo "BUILD_DIR=$PWD/_build" >> "$GITHUB_ENV"
+          fi
 
       - name: Build in a Debian ${{ inputs.dist }} container
         run: |
-          docker run --rm -v "$PWD:/w" -w /w -e PVE_LIVEPATCH_DIR=/w/_build \
+          echo "building in $BUILD_DIR"
+          docker run --rm -v "$PWD:/w" -v "$BUILD_DIR:/build" -w /w -e PVE_LIVEPATCH_DIR=/build \
             "debian:${DIST}" bash ci/build-livepatch.sh "$KERNEL" "$PATCH" "$NAME" "$FULL" "$DIST"
 
       - name: Keep build logs
@@ -72,7 +82,7 @@ jobs:
           name: logs-${{ env.TAG }}
           path: |
             dist/*.log
-            _build/out/**/*.log
+            ${{ env.BUILD_DIR }}/out/**/*.log
           if-no-files-found: ignore
 
       - name: Publish release ${{ env.TAG }}
@@ -90,7 +100,7 @@ jobs:
           pve-livepatch apply /var/lib/pve-livepatch/out/${KERNEL}/livepatch-${NAME}.ko --persist
           \`\`\`
           EOF
-          assets=(dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/kpatch-build.log dist/SHA256SUMS)
+          assets=(dist/livepatch-"${NAME}"-"${KERNEL}".ko dist/"${NAME}".patch dist/build.log dist/SHA256SUMS)
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" "${assets[@]}" --clobber
           else

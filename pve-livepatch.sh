@@ -33,7 +33,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.4.3"
+readonly SCRIPT_VERSION="1.5.0"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -231,6 +231,7 @@ cmd_setup() {
   log "Installing build dependencies"
   apt-get install -y --no-install-recommends \
     git build-essential bc bison flex cpio rsync kmod curl ca-certificates gawk patch \
+    patchutils libxxhash-dev \
     libelf-dev libdw-dev elfutils libssl-dev dwarves python3 zstd pkg-config \
     mokutil dpkg-dev
 
@@ -413,7 +414,7 @@ cmd_source() {
 
 # ----------------------------------------------------------------------------- build
 cmd_build() {
-  need_root; need_cmd kpatch-build
+  need_root
   local patch="" name="" extra=()
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -445,42 +446,74 @@ cmd_build() {
 
   [[ -n $name ]] || name=$(basename "$patch" .patch)
   name=$(echo "$name" | tr -c 'A-Za-z0-9_\n' '_' | cut -c1-40)
-  (( FULL )) || extra+=(-t vmlinux)
-  disk_preflight
-  log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}, $(build_mode): $( (( FULL )) && echo 'vmlinux + modules' || echo 'vmlinux only'))"
-  log "first run compiles the original kernel, later runs only what the patch changes"
+  local engine
+  case ${LP_ENGINE:-auto} in
+    kpatch|klp-build) engine=$LP_ENGINE ;;
+    auto)
+      # Kernels >= 6.19 ship their own builder (scripts/livepatch/klp-build).
+      # It is required on x86 kernels with IBT (Ubuntu, Proxmox): objtool runs
+      # only at vmlinux link time there, which kpatch-build cannot handle.
+      if [[ -x $src/scripts/livepatch/klp-build ]] && grep -qx 'CONFIG_KLP_BUILD=y' "$src/.config" 2>/dev/null; then
+        engine=klp-build
+      else
+        engine=kpatch
+      fi ;;
+    *) die "LP_ENGINE must be auto, kpatch or klp-build" ;;
+  esac
 
-  # kpatch-build -s needs the ORIGINAL kernel image (the reference for the
-  # running kernel) already compiled in the source tree. Build it once.
-  if [[ ! -f $src/vmlinux ]]; then
-    local vlog="$WORKDIR/out/$KREL/vmlinux-build.log"
-    log "Compiling the original vmlinux (first build only — the longest step)"
-    if ! make -C "$src" -j"$JOBS" vmlinux > "$vlog" 2>&1; then
-      tail -n 25 "$vlog" >&2
-      die "compiling the original vmlinux failed — see ${vlog}"
+  if [[ $engine == klp-build ]]; then
+    [[ -x $src/scripts/livepatch/klp-build ]] || die "this kernel source has no scripts/livepatch/klp-build"
+    FULL=1                                    # klp-build always builds vmlinux + modules
+    disk_preflight
+    log "Building livepatch-${name}.ko with the kernel's own klp-build (-j${JOBS}, vmlinux + modules)"
+    log "it compiles the original and the patched kernel — the first run takes a long time"
+    local klpargs=(-j "$JOBS" -o "$WORKDIR/out/$KREL/livepatch-${name}.ko")
+    [[ " ${extra[*]} " == *" --non-replace "* ]] && klpargs+=(--no-replace)
+    local blog="$WORKDIR/out/$KREL/klp-build-${name}.log"
+    if ! ( cd "$src" && ./scripts/livepatch/klp-build "${klpargs[@]}" "$patch" ) 2>&1 | tee "$blog"; then
+      grep -q 'no changes detected' "$blog" \
+        && die "klp-build found no changed functions — does the patch touch code built into this kernel?"
+      die "klp-build failed — see ${blog} (work files in ${src}/klp-tmp)"
     fi
-    ok "original vmlinux built"
-  fi
-  # kpatch-build copies Module.symvers after its build. A vmlinux-only build
-  # (small mode) only writes vmlinux.symvers; for a patch to built-in code the
-  # vmlinux exports are exactly what the patch module links against.
-  if (( ! FULL )) && [[ ! -f $src/Module.symvers && -f $src/vmlinux.symvers ]]; then
-    cp "$src/vmlinux.symvers" "$src/Module.symvers"
-    ok "Module.symvers seeded from vmlinux.symvers (small mode)"
-  fi
+  else
+    need_cmd kpatch-build
+    (( FULL )) || extra+=(-t vmlinux)
+    disk_preflight
+    log "Building livepatch-${name}.ko with kpatch-build (-j${JOBS}, $(build_mode): $( (( FULL )) && echo 'vmlinux + modules' || echo 'vmlinux only'))"
+    log "first run compiles the original kernel, later runs only what the patch changes"
 
-  local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
-  if ! ( cd "$WORKDIR/out/$KREL" && \
-         kpatch-build -s "$src" -c "$KCONFIG" -j "$JOBS" -n "$name" "${extra[@]}" "$patch" ) 2>&1 | tee "$blog"; then
-    if (( ! FULL )) && grep -q 'no changed objects found' "$blog"; then
-      die "the patch only changes code in kernel modules, which small mode does not build — rerun with: $0 build ${patch} --name ${name} --full  (needs ~30G)"
+    # kpatch-build -s needs the ORIGINAL kernel image (the reference for the
+    # running kernel) already compiled in the source tree. Build it once.
+    if [[ ! -f $src/vmlinux ]]; then
+      local vlog="$WORKDIR/out/$KREL/vmlinux-build.log"
+      log "Compiling the original vmlinux (first build only — the longest step)"
+      if ! make -C "$src" -j"$JOBS" vmlinux > "$vlog" 2>&1; then
+        tail -n 25 "$vlog" >&2
+        die "compiling the original vmlinux failed — see ${vlog}"
+      fi
+      ok "original vmlinux built"
     fi
-    die "kpatch-build failed — see ${blog} and ~/.kpatch/build.log"
+    # kpatch-build copies Module.symvers after its build. A vmlinux-only build
+    # (small mode) only writes vmlinux.symvers; for a patch to built-in code the
+    # vmlinux exports are exactly what the patch module links against.
+    if (( ! FULL )) && [[ ! -f $src/Module.symvers && -f $src/vmlinux.symvers ]]; then
+      cp "$src/vmlinux.symvers" "$src/Module.symvers"
+      ok "Module.symvers seeded from vmlinux.symvers (small mode)"
+    fi
+
+    local blog="$WORKDIR/out/$KREL/kpatch-build-${name}.log"
+    if ! ( cd "$WORKDIR/out/$KREL" && \
+           kpatch-build -s "$src" -c "$KCONFIG" -j "$JOBS" -n "$name" "${extra[@]}" "$patch" ) 2>&1 | tee "$blog"; then
+      if (( ! FULL )) && grep -q 'no changed objects found' "$blog"; then
+        die "the patch only changes code in kernel modules, which small mode does not build — rerun with: $0 build ${patch} --name ${name} --full  (needs ~30G)"
+      fi
+      die "kpatch-build failed — see ${blog} and ~/.kpatch/build.log"
+    fi
   fi
 
   local ko="$WORKDIR/out/$KREL/livepatch-${name}.ko"
   [[ -f $ko ]] || ko=$(ls -t "$WORKDIR/out/$KREL"/*.ko 2>/dev/null | head -1)
-  [[ -f $ko ]] || die "kpatch-build finished but no .ko found"
+  [[ -f $ko ]] || die "${engine} finished but no .ko found"
 
   if [[ -r $MOK_KEY && -r $MOK_CERT ]]; then
     sign_module "$ko"
