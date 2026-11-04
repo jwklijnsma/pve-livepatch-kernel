@@ -218,6 +218,7 @@ klp_src() {
   cat > "$SRC/scripts/livepatch/klp-build" <<'K'
 #!/usr/bin/env bash
 echo "klp-build $* (cwd=$PWD)" >> "$STUB_LOG"
+echo "OBJTOOL=${OBJTOOL:-unset}" >> "$STUB_LOG"
 [[ -n ${FAKE_KLP_FAIL:-} ]] && { echo "$FAKE_KLP_FAIL" >&2; exit 1; }
 out=""; while [[ $# -gt 0 ]]; do [[ $1 == -o ]] && { out=$2; shift; }; shift; done
 touch "$out"; echo "SUCCESS"
@@ -235,6 +236,7 @@ K
   assert_called "klp-build -j 3 -o $PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko $PATCH (cwd=$SRC)"
   assert_output_contains "the kernel's own klp-build"
   refute_output_contains "original vmlinux"
+  assert_called "OBJTOOL=$SRC/tools/objtool/objtool"
   [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/livepatch-fix1.ko" ]]
   [[ -f "$PVE_LIVEPATCH_DIR/out/$KREL/klp-build-fix1.log" ]]
 }

@@ -33,7 +33,7 @@
 #   * Not every change is live-patchable (struct/layout changes, __init code,
 #     some asm). kpatch-build refuses those; fall back to migrate + reboot.
 # =============================================================================
-readonly SCRIPT_VERSION="1.5.0"
+readonly SCRIPT_VERSION="1.5.1"
 readonly WORKDIR="${PVE_LIVEPATCH_DIR:-/var/lib/pve-livepatch}"
 readonly PVE_KERNEL_REPO="${PVE_KERNEL_REPO:-https://git.proxmox.com/git/pve-kernel.git}"
 readonly KPATCH_REPO="${KPATCH_REPO:-https://github.com/dynup/kpatch.git}"
@@ -470,7 +470,9 @@ cmd_build() {
     local klpargs=(-j "$JOBS" -o "$WORKDIR/out/$KREL/livepatch-${name}.ko")
     [[ " ${extra[*]} " == *" --non-replace "* ]] && klpargs+=(--no-replace)
     local blog="$WORKDIR/out/$KREL/klp-build-${name}.log"
-    if ! ( cd "$src" && ./scripts/livepatch/klp-build "${klpargs[@]}" "$patch" ) 2>&1 | tee "$blog"; then
+    # OBJTOOL: some distro copies of klp-build (e.g. Proxmox/Ubuntu 7.0) use it
+    # without defining it; upstream sets the same path itself.
+    if ! ( cd "$src" && OBJTOOL="$src/tools/objtool/objtool" ./scripts/livepatch/klp-build "${klpargs[@]}" "$patch" ) 2>&1 | tee "$blog"; then
       grep -q 'no changes detected' "$blog" \
         && die "klp-build found no changed functions — does the patch touch code built into this kernel?"
       die "klp-build failed — see ${blog} (work files in ${src}/klp-tmp)"
