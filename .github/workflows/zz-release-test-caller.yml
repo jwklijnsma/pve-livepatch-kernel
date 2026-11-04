@@ -1,9 +1,0 @@
-name: zz release test caller (temporary)
-on: workflow_dispatch
-permissions:
-  contents: write
-jobs:
-  call:
-    uses: ./.github/workflows/zz-release-test.yml
-    permissions:
-      contents: write
