@@ -68,8 +68,10 @@ secrets, just like the manifest and module keys.
 
 ## Package contents
 
-`/usr/sbin/pve-klp`, systemd units, `/etc/pve-klp/pve-klp.toml`
-(conffile), empty `/etc/pve-klp/trusted.d/` and `hooks.d/`. The boot unit is
+`/usr/sbin/pve-klp`, systemd units, the configuration template
+`/usr/share/pve-klp/pve-klp.toml` (copied to `/etc/pve-klp/pve-klp.toml` on
+first installation; not a conffile, so upgrades never prompt), empty
+`/etc/pve-klp/trusted.d/` and `hooks.d/`. The boot unit is
 enabled; the auto timer is installed but disabled. Trusted keys are not part
 of the package: project builds would ship a separate
 `pve-klp-archive-keyring`-style package with the project's manifest key,

@@ -50,6 +50,9 @@ pub struct KernelState {
     pub held: bool,
     pub phase: Phase,
     pub last_error: Option<String>,
+    /// A transition could neither complete nor be reversed: only a reboot
+    /// gives a known state again. Cleared by the next state change.
+    pub stuck: bool,
     pub signed_by: Option<String>,
     pub updated: Option<DateTime<Utc>>,
 }

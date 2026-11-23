@@ -35,6 +35,12 @@ if [ "$RING" != canary ]; then
   pve-klp-tool promote --manifest "$M" --ring "$RING" --out "$OUT/manifest.$RING.json"
   M="$OUT/manifest.$RING.json"
 fi
+# The manifest must still describe exactly this build (defense in depth:
+# the agent would reject most mismatches, but nothing edited gets signed).
+QEMU_ARGS=()
+[ "$SKIP_QEMU" = 1 ] || QEMU_ARGS=(--qemu-ok "$OUT/qemu.ok")
+pve-klp-tool check-manifest --manifest "$M" --resolved "$OUT/resolved.json" --module "$OUT/$MOD" \
+  ${QEMU_ARGS[@]+"${QEMU_ARGS[@]}"} || die "manifest does not match the build output; not signing"
 cp "$OUT/$MOD" "$DST/$MOD"
 for f in build.log functions.txt gate-a.txt resolved.json config-check.txt qemu.ok qemu.log; do
   [ -f "$OUT/$f" ] && cp "$OUT/$f" "$DST/"

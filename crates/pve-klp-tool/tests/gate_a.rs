@@ -156,3 +156,78 @@ fn gate_a_requires_module_to_patch_exactly_the_reviewed_functions() {
     assert!(out.contains("cmdline_proc_show is patched by the module but not listed"), "{out}");
     assert!(out.contains("tcp_v4_rcv is listed in the reviewed catalog entries but not patched"), "{out}");
 }
+
+#[test]
+fn check_manifest_refuses_an_edited_manifest() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path();
+    let bin = env!("CARGO_BIN_EXE_pve-klp-tool");
+    // A "signed" level-1 module for 7.3.5-1-pve.
+    let mut ko = module("7.3.5-1-pve SMP", &[], &[]);
+    ko.extend_from_slice(b"sig~Module signature appended~\n");
+    std::fs::write(d.join("klp_pve_7_3_5_1_p1.ko"), &ko).unwrap();
+    std::fs::write(d.join("functions.txt"), "vmlinux:cmdline_proc_show\n").unwrap();
+    std::fs::write(
+        d.join("resolved.json"),
+        r#"{"kernel":"7.3.5-1-pve","patches":[],"fixes":[{"id":"CVE-2026-0001","functions":["vmlinux:cmdline_proc_show"]}],"not_covered":[],"skipped":[]}"#,
+    )
+    .unwrap();
+    let ok = Command::new(bin)
+        .args(["manifest", "--level", "1", "--ring", "canary", "--build-id", "498aea2c"])
+        .arg("--resolved")
+        .arg(d.join("resolved.json"))
+        .arg("--module")
+        .arg(d.join("klp_pve_7_3_5_1_p1.ko"))
+        .arg("--functions")
+        .arg(d.join("functions.txt"))
+        .arg("--out")
+        .arg(d.join("manifest.json"))
+        .status()
+        .unwrap();
+    assert!(ok.success());
+    let sha = String::from_utf8(
+        Command::new("shasum").args(["-a", "256"]).arg(d.join("klp_pve_7_3_5_1_p1.ko")).output().unwrap().stdout,
+    )
+    .unwrap()
+    .split_whitespace()
+    .next()
+    .unwrap()
+    .to_owned();
+    std::fs::write(
+        d.join("qemu.ok"),
+        format!("module=klp_pve_7_3_5_1_p1.ko\nmodule_sha256={sha}\nkernel=7.3.5-1-pve\nbuild_id=498aea2c\n"),
+    )
+    .unwrap();
+
+    let check = || {
+        let out = Command::new(bin)
+            .arg("check-manifest")
+            .arg("--manifest")
+            .arg(d.join("manifest.json"))
+            .arg("--resolved")
+            .arg(d.join("resolved.json"))
+            .arg("--module")
+            .arg(d.join("klp_pve_7_3_5_1_p1.ko"))
+            .arg("--qemu-ok")
+            .arg(d.join("qemu.ok"))
+            .output()
+            .unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+    let (ok, out) = check();
+    assert!(ok, "{out}");
+
+    let original = std::fs::read_to_string(d.join("manifest.json")).unwrap();
+    // Edited level (and matching name, so the manifest itself is valid).
+    std::fs::write(
+        d.join("manifest.json"),
+        original.replace("\"level\": 1", "\"level\": 4").replace("klp_pve_7_3_5_1_p1\"", "klp_pve_7_3_5_1_p4\""),
+    )
+    .unwrap();
+    let (ok, out) = check();
+    assert!(!ok && out.contains("module name"), "{out}");
+    // Edited build-id.
+    std::fs::write(d.join("manifest.json"), original.replace("498aea2c", "00000000")).unwrap();
+    let (ok, out) = check();
+    assert!(!ok && out.contains("build-id"), "{out}");
+}

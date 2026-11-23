@@ -48,18 +48,46 @@ fn toml_string(v: &str) -> String {
     s
 }
 
-/// Write the config with repository and ring set. Returns the new text.
-pub fn write_config(path: &Path, repository: &str, ring: &str) -> Result<String> {
+/// One setting `setup` looked at: its value before and after.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Change {
+    pub key: &'static str,
+    pub old: String,
+    pub new: String,
+}
+
+impl Change {
+    pub fn changed(&self) -> bool {
+        self.old != self.new
+    }
+}
+
+/// Set repository and/or ring in the config file. A value that is not
+/// given keeps what the file already says; only a missing setting falls
+/// back to the default (ring `stable`). Returns what changed.
+pub fn write_config(path: &Path, repository: Option<&str>, ring: Option<&str>) -> Result<Vec<Change>> {
     let current = match std::fs::read_to_string(path) {
         Ok(t) => t,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => CONFIG_TEMPLATE.to_owned(),
         Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
     };
-    let text = set_key(&set_key(&current, "repository", repository), "ring", ring);
-    let cfg: Config = toml::from_str(&text).context("resulting configuration is invalid")?;
-    cfg.validate()?;
-    crate::state::write_atomic(path, text.as_bytes())?;
-    Ok(text)
+    let before: Config = toml::from_str(&current).with_context(|| format!("parsing {}", path.display()))?;
+    let repository = repository.map(str::to_owned).unwrap_or_else(|| before.repository.clone());
+    if repository.trim().is_empty() {
+        bail!("no repository configured yet: pass --repository");
+    }
+    let ring = ring.map(str::to_owned).unwrap_or_else(|| before.ring.clone());
+
+    let text = set_key(&set_key(&current, "repository", &repository), "ring", &ring);
+    let after: Config = toml::from_str(&text).context("resulting configuration is invalid")?;
+    after.validate()?;
+    if text != current || !path.exists() {
+        crate::state::write_atomic(path, text.as_bytes())?;
+    }
+    Ok(vec![
+        Change { key: "repository", old: before.repository, new: after.repository },
+        Change { key: "ring", old: before.ring, new: after.ring },
+    ])
 }
 
 /// Validate a minisign public key and install it as `<dir>/<name>.pub`.
@@ -104,10 +132,28 @@ mod tests {
     fn write_config_validates() {
         let t = tempfile::tempdir().unwrap();
         let p = t.path().join("pve-klp.toml");
-        write_config(&p, "https://klp.example.org", "stable").unwrap();
-        assert!(write_config(&p, "https://klp.example.org", "yolo").is_err());
+        write_config(&p, Some("https://klp.example.org"), None).unwrap();
+        assert!(write_config(&p, None, Some("yolo")).is_err());
         let cfg = Config::load(&p).unwrap();
-        assert_eq!(cfg.ring, "stable");
+        assert_eq!(cfg.ring, "stable", "first setup defaults to stable");
+        assert!(
+            write_config(&t.path().join("new.toml"), None, Some("canary")).is_err(),
+            "repository required at first"
+        );
+    }
+
+    #[test]
+    fn rerun_without_ring_keeps_the_ring() {
+        let t = tempfile::tempdir().unwrap();
+        let p = t.path().join("pve-klp.toml");
+        write_config(&p, Some("https://klp.example.org"), Some("canary")).unwrap();
+        let ch = write_config(&p, Some("https://klp.example.org"), None).unwrap();
+        assert_eq!(Config::load(&p).unwrap().ring, "canary");
+        assert!(ch.iter().all(|c| !c.changed()), "{ch:?}");
+        let ch = write_config(&p, None, Some("early")).unwrap();
+        let ring = ch.iter().find(|c| c.key == "ring").unwrap();
+        assert_eq!((ring.old.as_str(), ring.new.as_str()), ("canary", "early"));
+        assert_eq!(Config::load(&p).unwrap().repository, "https://klp.example.org");
     }
 
     #[test]

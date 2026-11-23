@@ -216,9 +216,17 @@ impl<K: KernelOps> Checker<'_, K> {
         if !cert.exists() {
             return vec![item(Level::Fail, format!("module certificate {} not found", cert.display()))];
         }
-        match mok_enrolled(cert) {
-            Some(true) => vec![item(Level::Ok, format!("{} is enrolled", cert.display()))],
-            Some(false) => vec![item(
+        match mok_state(cert) {
+            Some(MokState::Enrolled) => vec![item(Level::Ok, format!("{} is enrolled", cert.display()))],
+            Some(MokState::Pending) => vec![item(
+                Level::Warn,
+                format!(
+                    "{} enrollment is pending: confirm it in MokManager on the next boot (console or BMC); \
+                     until then the kernel rejects the modules",
+                    cert.display()
+                ),
+            )],
+            Some(MokState::NotEnrolled) => vec![item(
                 Level::Fail,
                 format!(
                     "{} is not enrolled; the kernel will reject the modules. Run `pve-klp mok enroll` and confirm in MokManager on the next boot",
@@ -230,11 +238,31 @@ impl<K: KernelOps> Checker<'_, K> {
     }
 }
 
-/// `Some(true)` if `mokutil --test-key` reports the key as enrolled.
-pub fn mok_enrolled(cert: &Path) -> Option<bool> {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MokState {
+    Enrolled,
+    /// Imported with `mokutil --import`, waiting for confirmation in
+    /// MokManager on the next boot.
+    Pending,
+    NotEnrolled,
+}
+
+/// Interpret `mokutil --test-key` output.
+pub fn parse_mok_test_key(text: &str) -> MokState {
+    if text.contains("already enrolled") {
+        MokState::Enrolled
+    } else if text.contains("enrollment request") {
+        MokState::Pending
+    } else {
+        MokState::NotEnrolled
+    }
+}
+
+/// `None` if mokutil is not available.
+pub fn mok_state(cert: &Path) -> Option<MokState> {
     let out = Command::new("mokutil").arg("--test-key").arg(cert).output().ok()?;
     let text = String::from_utf8_lossy(&out.stdout) + String::from_utf8_lossy(&out.stderr);
-    Some(text.contains("already enrolled"))
+    Some(parse_mok_test_key(&text))
 }
 
 pub fn worst(items: &[Item]) -> Level {
@@ -252,6 +280,16 @@ mod tests {
         let cfg = Config { module_cert: cert, repository: String::new(), ..Default::default() };
         let agent = Agent::new(cfg, FakeKernel::new("7.3.5-1-pve"), None, TrustStore::default());
         Checker { agent: &agent, root: root.to_path_buf() }.run()
+    }
+
+    #[test]
+    fn mokutil_test_key_output() {
+        assert_eq!(parse_mok_test_key("/etc/pve-klp/module-cert.der is already enrolled\n"), MokState::Enrolled);
+        assert_eq!(
+            parse_mok_test_key("/etc/pve-klp/module-cert.der is already in the enrollment request\n"),
+            MokState::Pending
+        );
+        assert_eq!(parse_mok_test_key("/etc/pve-klp/module-cert.der is not enrolled\n"), MokState::NotEnrolled);
     }
 
     #[test]

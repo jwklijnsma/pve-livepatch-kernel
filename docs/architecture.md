@@ -136,7 +136,7 @@ itself.
 
 | Path | Content |
 | --- | --- |
-| `/etc/pve-klp/pve-klp.toml` | configuration |
+| `/etc/pve-klp/pve-klp.toml` | configuration; created on first install, never touched by upgrades |
 | `/etc/pve-klp/trusted.d/*.pub` | trusted manifest keys |
 | `/etc/pve-klp/hooks.d/*` | post-transition hooks |
 | `/var/lib/pve-klp/state.json` | per kernel: highest accepted, desired level, hold, phase, last error |

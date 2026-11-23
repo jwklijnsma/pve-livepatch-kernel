@@ -1,3 +1,12 @@
+pve-klp (0.1.4-1) trixie; urgency=medium
+
+  * /etc/pve-klp/pve-klp.toml is no longer a conffile: upgrades never prompt.
+  * setup keeps the configured ring and repository when they are not given.
+  * check reports a pending MOK enrollment; status separates stuck from
+    cleanly backed-out failures.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Mon, 23 Nov 2026 22:25:57 +0000
+
 pve-klp (0.1.3-1) trixie; urgency=medium
 
   * check: detect Secure Boot (wrong EFI GUID) and check MOK enrollment.

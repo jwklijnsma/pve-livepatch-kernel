@@ -29,11 +29,13 @@ enum Cmd {
     /// Configure repository, ring and trusted key, then run `check`.
     Setup {
         /// Release repository, e.g. https://klp.example.org or /srv/klp.
+        /// Required the first time; kept when omitted later.
         #[arg(long)]
-        repository: String,
-        /// Release ring of this node.
-        #[arg(long, default_value = "stable", value_parser = ["canary", "early", "stable"])]
-        ring: String,
+        repository: Option<String>,
+        /// Release ring of this node (canary, early, stable). Kept when
+        /// omitted; `stable` on first setup.
+        #[arg(long, value_parser = ["canary", "early", "stable"])]
+        ring: Option<String>,
         /// Manifest signing key: a minisign public key file, or an https URL.
         #[arg(long)]
         key: Option<String>,
@@ -130,7 +132,7 @@ fn run(cli: Cli) -> Result<i32> {
         return Ok(0);
     }
     if let Cmd::Setup { repository, ring, key, key_name } = &cli.cmd {
-        return setup(&cli.config, repository, ring, key.as_deref(), key_name);
+        return setup(&cli.config, repository.as_deref(), ring.as_deref(), key.as_deref(), key_name);
     }
     let cfg = Config::load(&cli.config)?;
     match cli.cmd {
@@ -208,9 +210,20 @@ fn run(cli: Cli) -> Result<i32> {
             if !cert.exists() {
                 bail!("{} not found", cert.display());
             }
-            if check::mok_enrolled(&cert) == Some(true) {
-                println!("{} is already enrolled", cert.display());
-                return Ok(0);
+            match check::mok_state(&cert) {
+                Some(check::MokState::Enrolled) => {
+                    println!("{} is already enrolled", cert.display());
+                    return Ok(0);
+                }
+                Some(check::MokState::Pending) => {
+                    println!(
+                        "{} is already imported: confirm the enrollment in MokManager on the next boot \
+                         (console or BMC)",
+                        cert.display()
+                    );
+                    return Ok(0);
+                }
+                _ => {}
             }
             println!(
                 "Importing {} as Machine Owner Key. mokutil asks for a one-time password.\n\
@@ -225,10 +238,24 @@ fn run(cli: Cli) -> Result<i32> {
     }
 }
 
-fn setup(config: &std::path::Path, repository: &str, ring: &str, key: Option<&str>, key_name: &str) -> Result<i32> {
+fn setup(
+    config: &std::path::Path,
+    repository: Option<&str>,
+    ring: Option<&str>,
+    key: Option<&str>,
+    key_name: &str,
+) -> Result<i32> {
     use pve_klp::setup;
-    setup::write_config(config, repository, ring)?;
-    println!("wrote {} (repository {repository}, ring {ring})", config.display());
+    let changes = setup::write_config(config, repository, ring)?;
+    println!("{}:", config.display());
+    for c in &changes {
+        if c.changed() {
+            let old = if c.old.is_empty() { "(unset)" } else { c.old.as_str() };
+            println!("  {:<11} {} -> {}", c.key, old, c.new);
+        } else {
+            println!("  {:<11} {} (unchanged)", c.key, c.new);
+        }
+    }
     let cfg = Config::load(config)?;
     if let Some(k) = key {
         let text = if k.starts_with("https://") {

@@ -351,6 +351,8 @@ fn stuck_transition_is_reversed_after_timeout_never_forced() {
     assert_eq!(st.highest_accepted, 1);
     let r = report::collect(&a).unwrap();
     assert_eq!(r.exit_code(), report::exit::FAILED);
+    assert!(!r.reboot_reasons.iter().any(|x| x.contains("neither complete")), "{:?}", r.reboot_reasons);
+    assert!(r.hints.iter().any(|h| h.contains("run `pve-klp apply` again")), "{:?}", r.hints);
     assert!(r.last_error.unwrap().contains("CPU 3/KVM"));
     assert_eq!(st.desired_level, Some(1));
 }
@@ -366,6 +368,8 @@ fn stuck_reversal_is_reported_not_forced() {
     let e = a.apply(&explicit()).unwrap_err();
     assert!(e.to_string().contains("does not use `force`"), "{e}");
     assert_eq!(env.state().get(KVER).phase, Phase::Failed);
+    assert!(env.state().get(KVER).stuck);
+    assert!(report::collect(&a).unwrap().reboot_reasons.iter().any(|x| x.contains("neither complete")));
     assert!(report::collect(&a).unwrap().hints.is_empty(), "still in transition: no leftover yet");
 
     // Later the blocking task goes away and the kernel finishes the

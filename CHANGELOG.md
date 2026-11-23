@@ -6,6 +6,48 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-11-23
+
+Fourth round from the real-host test, which also ran a guest VM under load
+during 10 revert/apply cycles, a patched module object that is loaded only
+after the boot reload, and anti-rollback across kernel releases and wrong
+build-ids.
+
+### Upgrade note
+
+Nodes that ran `pve-klp setup` on 0.1.3 or earlier may be stuck in a
+half-configured state ("iU") after a non-interactive upgrade to 0.1.3. Run
+once:
+
+    dpkg --force-confold --configure pve-klp
+
+and then upgrade to 0.1.4. From 0.1.4 on, upgrades never prompt.
+
+### Fixed
+
+- Upgrades prompted (and failed without a TTY) on every node that ran
+  `setup`, because `/etc/pve-klp/pve-klp.toml` was a dpkg conffile that
+  `setup` edits. The package now ships the template as
+  `/usr/share/pve-klp/pve-klp.toml` and creates the config only when it is
+  missing; existing configs are kept. CI installs 0.1.3, runs `setup` and
+  upgrades without a TTY on every change.
+- Running `setup` again without `--ring` reset the ring to `stable`. Options
+  that are not given now keep the configured value; `setup` prints each
+  value and whether it changed. `--repository` is only required the first
+  time.
+
+### Changed
+
+- `check` and `mok enroll` recognize a pending MOK enrollment ("confirm in
+  MokManager on the next boot") instead of saying "not enrolled".
+- `status` only asks for a reboot when a transition could neither complete
+  nor be reversed. After a cleanly backed-out apply it suggests running
+  `pve-klp apply` again; the exit code stays 20.
+- `sign-manifest.sh` runs the new `pve-klp-tool check-manifest`, which
+  compares the manifest with the module, the resolved catalog and
+  `qemu.ok` (kernel, module hash, build-id) and refuses to sign an edited
+  manifest.
+
 ## [0.1.3] - 2026-11-23
 
 Third round from the real-host test, which added a stalled transition
@@ -141,7 +183,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/prepaid-host/pve-klp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/prepaid-host/pve-klp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/prepaid-host/pve-klp/compare/v0.1.0...v0.1.1

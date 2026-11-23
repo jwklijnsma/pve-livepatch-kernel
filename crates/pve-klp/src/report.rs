@@ -112,8 +112,17 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         }
         None => (None, vec![], vec![]),
     };
+    let mut hints = leftover_hints(agent, &patches);
     if ks.phase == Phase::Failed {
-        reboot_reasons.push("the last livepatch operation failed; see last_error".into());
+        if ks.stuck {
+            reboot_reasons.push("a livepatch transition could neither complete nor be reversed; see last_error".into());
+        } else {
+            hints.push(
+                "the last operation failed and was backed out; the node is in its previous state. Fix the cause \
+                 (see last_error) and run `pve-klp apply` again"
+                    .into(),
+            );
+        }
     }
 
     Ok(StatusReport {
@@ -133,7 +142,7 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         reboot_required: !reboot_reasons.is_empty(),
         reboot_reasons,
         last_error: ks.last_error,
-        hints: leftover_hints(agent, &patches),
+        hints,
     })
 }
 

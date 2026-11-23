@@ -1,4 +1,4 @@
-.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.3" "System Administration"
+.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.4" "System Administration"
 .SH NAME
 pve-klp \- verify and load kernel livepatches on Proxmox VE hosts
 .SH SYNOPSIS
@@ -20,11 +20,16 @@ A livepatch bridges the time until the next maintenance window. It does
 not replace installing the kernel update and rebooting.
 .SH COMMANDS
 .TP
-.B setup \-\-repository \fIurl\fR [\-\-ring \fIring\fR] [\-\-key \fIfile|url\fR] [\-\-key\-name \fIname\fR]
+.B setup \fR[\fB\-\-repository \fIurl\fR] [\fB\-\-ring \fIring\fR] [\fB\-\-key \fIfile|url\fR] [\fB\-\-key\-name \fIname\fR]
 Write repository and ring into the configuration file, install the
 manifest signing key into the trusted key directory, print its key id
 and run
 .BR check .
+Options that are not given keep the value already configured;
+.B \-\-repository
+is required the first time, the ring defaults to
+.BR stable .
+Every value is printed with what changed.
 Compare the printed key id with the one published by the repository
 owner.
 .TP
@@ -113,7 +118,9 @@ shows up as status=3/NOTIMPLEMENTED.
 .SH FILES
 .TP
 .I /etc/pve-klp/pve-klp.toml
-Configuration.
+Configuration. Created from
+.I /usr/share/pve-klp/pve-klp.toml
+on installation when missing; package upgrades never change it.
 .TP
 .I /etc/pve-klp/trusted.d/*.pub
 Trusted manifest signing keys (minisign format).

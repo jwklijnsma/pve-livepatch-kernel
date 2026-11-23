@@ -135,6 +135,18 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Check a manifest against the build output before signing it.
+    CheckManifest {
+        #[arg(long)]
+        manifest: PathBuf,
+        #[arg(long)]
+        resolved: PathBuf,
+        #[arg(long)]
+        module: PathBuf,
+        /// qemu.ok from qemu-test.sh: kernel, module hash and build-id must match.
+        #[arg(long)]
+        qemu_ok: Option<PathBuf>,
+    },
     /// Re-issue a manifest for another ring (promotion), same module and level.
     Promote {
         #[arg(long)]
@@ -361,6 +373,17 @@ fn run(cli: Cli) -> Result<bool> {
             write(&out, m.to_json_pretty().as_bytes())?;
             Ok(true)
         }
+        Cmd::CheckManifest { manifest, resolved, module, qemu_ok } => {
+            let errs = check_manifest(&manifest, &resolved, &module, qemu_ok.as_deref())?;
+            for e in &errs {
+                println!("ERROR   {e}");
+            }
+            println!(
+                "manifest {}",
+                if errs.is_empty() { "matches the build output" } else { "does NOT match the build output" }
+            );
+            Ok(errs.is_empty())
+        }
         Cmd::Promote { manifest, ring, out } => {
             if !RINGS.contains(&ring.as_str()) {
                 bail!("unknown ring {ring}");
@@ -376,4 +399,76 @@ fn run(cli: Cli) -> Result<bool> {
             Ok(true)
         }
     }
+}
+
+/// Everything in the manifest that the build output can confirm.
+fn check_manifest(manifest: &Path, resolved: &Path, module: &Path, qemu_ok: Option<&Path>) -> Result<Vec<String>> {
+    let m = Manifest::from_json(&read(manifest)?)?;
+    let r: catalog::Resolved = serde_json::from_slice(&read(resolved)?).context("parsing resolved catalog")?;
+    let ko = read(module)?;
+    let mut errs = Vec::new();
+
+    let file = module.file_name().map(|f| f.to_string_lossy().into_owned()).unwrap_or_default();
+    if file != m.module {
+        errs.push(format!("module file {file} != manifest module {}", m.module));
+    }
+    if hex::encode(Sha256::digest(&ko)) != m.sha256 {
+        errs.push("module SHA-256 differs from the manifest".into());
+    }
+    let info = klp_core::elf::parse_modinfo(&ko)?;
+    if info.name() != Some(m.module_name.as_str()) {
+        errs.push(format!("module name {:?} != manifest {:?}", info.name(), m.module_name));
+    }
+    if info.vermagic_release() != Some(m.kernel.as_str()) {
+        errs.push(format!("module vermagic {:?} != manifest kernel {}", info.vermagic_release(), m.kernel));
+    }
+    if m.module_name != naming::module_name(&m.kernel, m.level) {
+        errs.push(format!(
+            "level {} and kernel {} give module name {}, manifest says {}",
+            m.level,
+            m.kernel,
+            naming::module_name(&m.kernel, m.level),
+            m.module_name
+        ));
+    }
+    if r.kernel != m.kernel {
+        errs.push(format!("resolved catalog is for {}, manifest for {}", r.kernel, m.kernel));
+    }
+    let key = |f: &klp_core::manifest::Fix| {
+        let mut fun = f.functions.clone();
+        fun.sort();
+        (f.id.clone(), fun)
+    };
+    let mut want: Vec<_> = r.fixes.iter().map(key).collect();
+    let mut have: Vec<_> = m.fixes.iter().map(key).collect();
+    want.sort();
+    have.sort();
+    if want != have {
+        errs.push("fixes (ids or functions) differ from the resolved catalog".into());
+    }
+    let mut want: Vec<_> = r.not_covered.iter().map(|n| n.id.clone()).collect();
+    let mut have: Vec<_> = m.not_covered.iter().map(|n| n.id.clone()).collect();
+    want.sort();
+    have.sort();
+    if want != have {
+        errs.push("not_covered differs from the resolved catalog".into());
+    }
+
+    if let Some(q) = qemu_ok {
+        let text = String::from_utf8(read(q)?)?;
+        let get = |k: &str| text.lines().find_map(|l| l.strip_prefix(&format!("{k}=")).map(str::to_owned));
+        if get("kernel").as_deref() != Some(m.kernel.as_str()) {
+            errs.push(format!("qemu.ok kernel {:?} != manifest {}", get("kernel"), m.kernel));
+        }
+        if get("module_sha256").as_deref() != Some(m.sha256.as_str()) {
+            errs.push("qemu.ok was produced for a different module".into());
+        }
+        match (get("build_id"), &m.kernel_build_id) {
+            (Some(q), Some(b)) if q.eq_ignore_ascii_case(b) => {}
+            (Some(q), Some(b)) => errs.push(format!("manifest build-id {b} != booted kernel {q} (qemu.ok)")),
+            (Some(_), None) => errs.push("manifest is not bound to a kernel build-id, but qemu.ok has one".into()),
+            (None, _) => errs.push("qemu.ok has no build_id".into()),
+        }
+    }
+    Ok(errs)
 }

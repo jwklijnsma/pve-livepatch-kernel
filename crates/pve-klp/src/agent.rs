@@ -145,7 +145,15 @@ impl<K: KernelOps> Agent<K> {
         let k = state.kernel(release);
         k.phase = phase;
         k.last_error = err;
+        k.stuck = false;
         k.updated = Some((self.now)());
+        state.save(&self.cfg.state_file())
+    }
+
+    /// Failed, and backing out did not finish either.
+    fn save_stuck(&self, state: &mut State, release: &str, err: String) -> anyhow::Result<()> {
+        self.save_phase(state, release, Phase::Failed, Some(err))?;
+        state.kernel(release).stuck = true;
         state.save(&self.cfg.state_file())
     }
 
@@ -403,7 +411,7 @@ impl<K: KernelOps> Agent<K> {
                     }
                     Err(e) => {
                         msg.push_str(&format!("\n{e}"));
-                        self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
+                        self.save_stuck(state, release, msg.clone())?;
                     }
                 }
                 return Err(ApplyError::Failed(msg));
@@ -415,7 +423,7 @@ impl<K: KernelOps> Agent<K> {
             self.log(&msg);
             if let Err(e) = self.back_out(name) {
                 msg.push_str(&format!("\n{e}"));
-                self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
+                self.save_stuck(state, release, msg.clone())?;
                 return Err(ApplyError::Failed(msg));
             }
             msg.push_str(&format!("\n{name} was disabled and unloaded"));
@@ -691,7 +699,7 @@ impl<K: KernelOps> Agent<K> {
         let mut levels = Vec::new();
         for p in ours {
             if let Err(e) = self.back_out(&p.name) {
-                self.save_phase(&mut state, &release, Phase::Failed, Some(e.clone()))?;
+                self.save_stuck(&mut state, &release, e.clone())?;
                 return Err(ApplyError::Failed(e));
             }
             levels.extend(level_from_module_name(&p.name));
