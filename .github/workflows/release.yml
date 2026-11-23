@@ -52,6 +52,9 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
+      id-token: write
+      attestations: write
+      artifact-metadata: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
@@ -61,6 +64,33 @@ jobs:
       - name: stable download name for releases/latest/download
         run: cp dist/pve-klp_*_amd64.deb dist/pve-klp_amd64.deb
       - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: build provenance attestation
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: dist/*
+      - name: release notes from CHANGELOG.md
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on && /^\[[^]]+\]: http/ {next} on' CHANGELOG.md > notes.md
+          [ -s notes.md ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
+          cat >> notes.md <<NOTES
+
+          ### Install
+
+          \`\`\`bash
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/pve-klp_amd64.deb
+          apt install ./pve-klp_amd64.deb
+          pve-klp setup --repository <your repository> --key <manifest key>
+          \`\`\`
+
+          ### Verify
+
+          \`\`\`bash
+          sha256sum -c SHA256SUMS --ignore-missing
+          gh attestation verify pve-klp_amd64.deb --repo ${GITHUB_REPOSITORY}
+          \`\`\`
+          NOTES
+          cat notes.md
       - name: create release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,5 +98,4 @@ jobs:
           flags=()
           case "${GITHUB_REF_NAME}" in *-*) flags+=(--prerelease) ;; esac
           gh release create "${GITHUB_REF_NAME}" dist/* --title "pve-klp ${GITHUB_REF_NAME#v}" \
-            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md). Verify downloads with \`sha256sum -c SHA256SUMS\`." \
-            "${flags[@]}"
+            --notes-file notes.md --verify-tag "${flags[@]}"

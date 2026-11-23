@@ -8,6 +8,7 @@ your next maintenance window instead of tonight.
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 ![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)
 ![Proxmox VE 9](https://img.shields.io/badge/Proxmox%20VE-9-E57000.svg)
+[![Release](https://img.shields.io/github/v/release/prepaid-host/pve-klp?include_prereleases&sort=semver)](https://github.com/prepaid-host/pve-klp/releases)
 
 ```console
 $ pve-klp status
@@ -71,6 +72,16 @@ pve-klp apply
 # 4. Optional: pick up new levels automatically
 pve-klp auto enable
 ```
+
+Every release ships SHA256SUMS and signed build provenance, so you can check
+that a download was built by this repository's CI:
+
+```bash
+gh attestation verify pve-klp_amd64.deb --repo prepaid-host/pve-klp
+```
+
+A static binary (`pve-klp-x86_64-linux-musl`) is attached to each release as
+well, for hosts where you do not want the Debian package.
 
 With Secure Boot, enroll the module certificate once: run `pve-klp mok enroll`
 and confirm in MokManager on the next reboot (BMC or local console).
@@ -166,7 +177,7 @@ are out of scope.
 | 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | in progress |
 | 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | planned |
 | 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | tooling done, CI integration planned |
-| 3 | Agent 0.1: check, status, apply, revert, boot unit, .deb, Ansible role | done except Ansible role |
+| 3 | Agent 0.1: check, status, apply, revert, boot unit, .deb, Ansible role | released in v0.1.0, Ansible role planned |
 | 4 | Nested-PVE tests under load, canary on AMD and Intel hardware, 24 h soak | planned |
 | 5 | Public project builds, status page, APT repository | planned |
 
@@ -223,9 +234,12 @@ Build: `make test`, `make static` (static musl binary), `make deb`. Rust 1.88+.
 
 ## Contributing
 
-Catalog entries, testing reports and code are welcome. See
-[CONTRIBUTING.md](CONTRIBUTING.md); report vulnerabilities privately as
-described in [SECURITY.md](SECURITY.md).
+Catalog entries, test reports and code are welcome:
+
+- Questions and ideas: [GitHub Discussions](https://github.com/prepaid-host/pve-klp/discussions)
+- Bugs and CVE requests: [issues](https://github.com/prepaid-host/pve-klp/issues/new/choose)
+- How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md)
+- Vulnerabilities: privately, see [SECURITY.md](SECURITY.md)
 
 ## License
 

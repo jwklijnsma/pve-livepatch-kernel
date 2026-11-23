@@ -77,6 +77,9 @@ enum Cmd {
         #[arg(value_parser = ["enroll"])]
         action: String,
     },
+    /// Print a shell completion script (used by the package build).
+    #[command(hide = true)]
+    Completions { shell: clap_complete::Shell },
 }
 
 fn main() -> ExitCode {
@@ -107,12 +110,17 @@ fn write_textfile(agent: &Agent<LinuxKernel>) {
 }
 
 fn run(cli: Cli) -> Result<i32> {
+    if let Cmd::Completions { shell } = cli.cmd {
+        use clap::CommandFactory;
+        clap_complete::generate(shell, &mut Cli::command(), "pve-klp", &mut std::io::stdout());
+        return Ok(0);
+    }
     if let Cmd::Setup { repository, ring, key, key_name } = &cli.cmd {
         return setup(&cli.config, repository, ring, key.as_deref(), key_name);
     }
     let cfg = Config::load(&cli.config)?;
     match cli.cmd {
-        Cmd::Setup { .. } => unreachable!("handled above"),
+        Cmd::Setup { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
         Cmd::Check { json } => {
             let agent = build_agent(cfg, true)?;
             let items = Checker { agent: &agent, root: "/".into() }.run();

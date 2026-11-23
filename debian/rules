@@ -9,6 +9,8 @@ export CARGO_TARGET_DIR = $(CURDIR)/target
 
 override_dh_auto_build:
 	cargo build --release --locked -p pve-klp
+	mkdir -p target/completions
+	target/release/pve-klp completions bash > target/completions/pve-klp
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
