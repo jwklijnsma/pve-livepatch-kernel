@@ -397,7 +397,9 @@ impl<K: KernelOps> Agent<K> {
                 match self.back_out(name) {
                     Ok(()) => {
                         msg.push_str("\nthe transition was reversed; the previous state is active again");
-                        self.save_phase(state, release, Phase::Reverted, Some(msg.clone()))?;
+                        // A failed apply, even if cleanly backed out: monitoring
+                        // must see it. "reverted" is the operator's revert.
+                        self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
                     }
                     Err(e) => {
                         msg.push_str(&format!("\n{e}"));

@@ -58,6 +58,8 @@ pub struct StatusReport {
     pub reboot_required: bool,
     pub reboot_reasons: Vec<String>,
     pub last_error: Option<String>,
+    /// Observations about the live kernel that explain or resolve the state.
+    pub hints: Vec<String>,
 }
 
 pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
@@ -131,7 +133,30 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         reboot_required: !reboot_reasons.is_empty(),
         reboot_reasons,
         last_error: ks.last_error,
+        hints: leftover_hints(agent, &patches),
     })
+}
+
+/// Livepatch modules of ours that are loaded but no longer in
+/// /sys/kernel/livepatch, e.g. after a stalled revert that the kernel
+/// finished on its own later.
+fn leftover_hints<K: KernelOps>(agent: &Agent<K>, patches: &[crate::kernel::PatchInfo]) -> Vec<String> {
+    let Ok(mods) = agent.kernel.modules() else { return vec![] };
+    mods.iter()
+        .filter(|m| m.name.starts_with(MODULE_PREFIX) && m.is_livepatch())
+        .filter(|m| !patches.iter().any(|p| p.name == m.name))
+        .map(|m| {
+            if m.refcnt == 0 {
+                format!(
+                    "{} is unused: its transition has completed since. The next `pve-klp apply` removes it \
+                     (or `rmmod {}`)",
+                    m.name, m.name
+                )
+            } else {
+                format!("{} is loaded and referenced without a livepatch entry (forced?): plan a reboot", m.name)
+            }
+        })
+        .collect()
 }
 
 impl StatusReport {
@@ -214,6 +239,9 @@ impl StatusReport {
             }
         } else {
             let _ = writeln!(s, "reboot:        not required by known fixes");
+        }
+        for h in &self.hints {
+            let _ = writeln!(s, "note:          {h}");
         }
         if let Some(e) = &self.last_error {
             let _ = writeln!(s, "last error:    {}", e.replace('\n', "\n               "));
@@ -312,6 +340,7 @@ mod tests {
             reboot_required: false,
             reboot_reasons: vec![],
             last_error: None,
+            hints: vec![],
         }
     }
 

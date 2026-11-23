@@ -24,6 +24,7 @@ grep -E 'CC_VERSION_TEXT|_VERSION=|BINDGEN_VERSION_TEXT' /boot/config-$(uname -r
 | Kernel | gcc | binutils | pahole | rustc / LLVM | `SNAPSHOT` | `BACKPORTS_SNAPSHOT` |
 | --- | --- | --- | --- | --- | --- | --- |
 | 7.3.5-1-pve | 14.2.0-19 | 2.44 | 1.30 | 1.94.1 / 21 | `20261120T000000Z` | `20260915T000000Z` |
+| 7.3.4-1-pve | 14.2.0-19 | 2.44 | 1.30 | 1.94.1 / 21 | `20261120T000000Z` | `20260915T000000Z` |
 
 trixie-backports carried rustc 1.94.1 between the snapshots `20260515` and
 `20260915`. Debian main and security stay on the newer `SNAPSHOT`; an older

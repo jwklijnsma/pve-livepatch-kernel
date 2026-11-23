@@ -26,7 +26,8 @@ ring = "stable"
 # node_exporter textfile collector directory ("" disables).
 # textfile_dir = "/var/lib/prometheus/node-exporter"
 
-# Executables run after each successful transition; non-zero exit reverts.
+# Executables run (in name order) after each successful load by `apply` or
+# the boot reload, not after `revert`. A non-zero exit reverts the load.
 # hooks_dir = "/etc/pve-klp/hooks.d"
 
 # state_dir = "/var/lib/pve-klp"

@@ -346,8 +346,12 @@ fn stuck_transition_is_reversed_after_timeout_never_forced() {
     assert_eq!(a.kernel.loaded(), vec!["klp_pve_7_3_5_1_p1"]);
     assert!(a.kernel.st.borrow().calls.iter().all(|c| !c.contains("force")));
     let st = env.state().get(KVER);
-    assert_eq!(st.phase, Phase::Reverted);
+    assert_eq!(st.phase, Phase::Failed, "an automatic reversal is a failed apply");
+    assert!(!st.held, "only the operator's revert holds");
     assert_eq!(st.highest_accepted, 1);
+    let r = report::collect(&a).unwrap();
+    assert_eq!(r.exit_code(), report::exit::FAILED);
+    assert!(r.last_error.unwrap().contains("CPU 3/KVM"));
     assert_eq!(st.desired_level, Some(1));
 }
 
@@ -362,6 +366,25 @@ fn stuck_reversal_is_reported_not_forced() {
     let e = a.apply(&explicit()).unwrap_err();
     assert!(e.to_string().contains("does not use `force`"), "{e}");
     assert_eq!(env.state().get(KVER).phase, Phase::Failed);
+    assert!(report::collect(&a).unwrap().hints.is_empty(), "still in transition: no leftover yet");
+
+    // Later the blocking task goes away and the kernel finishes the
+    // reversal on its own: the module stays loaded, unused.
+    {
+        let mut st = a.kernel.st.borrow_mut();
+        st.reverse_stuck = false;
+        st.stuck = false;
+    }
+    for _ in 0..5 {
+        let _ = pve_klp::kernel::KernelOps::patch(&a.kernel, "klp_pve_7_3_5_1_p1");
+    }
+    let r = report::collect(&a).unwrap();
+    assert_eq!(r.hints.len(), 1, "{:?}", r.hints);
+    assert!(r.hints[0].contains("transition has completed") && r.hints[0].contains("rmmod klp_pve_7_3_5_1_p1"));
+    assert!(r.to_text().contains("note:"));
+    // The next apply cleans it up and loads again.
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 1, .. }));
+    assert!(report::collect(&a).unwrap().hints.is_empty());
 }
 
 #[test]

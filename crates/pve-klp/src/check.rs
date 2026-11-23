@@ -42,7 +42,12 @@ const REQUIRED: &[(&str, &str)] = &[
     ("CONFIG_KALLSYMS_ALL", "symbol lookup for livepatch relocations"),
 ];
 
-const SECURE_BOOT_VAR: &str = "/sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-e098032b8c4c";
+/// EFI_GLOBAL_VARIABLE vendor GUID (UEFI spec), owner of SecureBoot.
+pub const EFI_GLOBAL_VARIABLE_GUID: &str = "8be4df61-93ca-11d2-aa0d-00e098032b8c";
+
+fn secure_boot_var() -> String {
+    format!("/sys/firmware/efi/efivars/SecureBoot-{EFI_GLOBAL_VARIABLE_GUID}")
+}
 
 impl<K: KernelOps> Checker<'_, K> {
     fn p(&self, rel: &str) -> PathBuf {
@@ -126,7 +131,8 @@ impl<K: KernelOps> Checker<'_, K> {
             add("modules", Level::Fail, "kernel.modules_disabled=1: no module can be loaded until reboot".into());
         }
 
-        let secure_boot = std::fs::read(self.p(SECURE_BOOT_VAR)).ok().and_then(|b| b.get(4).copied()) == Some(1);
+        // efivarfs: 4 bytes of attributes, then the value (1 = enabled).
+        let secure_boot = std::fs::read(self.p(&secure_boot_var())).ok().and_then(|b| b.get(4).copied()) == Some(1);
         add("secure-boot", Level::Info, if secure_boot { "enabled" } else { "disabled or not EFI" }.into());
         if let Some(l) = self.read("/sys/kernel/security/lockdown") {
             add("lockdown", Level::Info, l);
@@ -233,4 +239,38 @@ pub fn mok_enrolled(cert: &Path) -> Option<bool> {
 
 pub fn worst(items: &[Item]) -> Level {
     items.iter().map(|i| i.level).max().unwrap_or(Level::Ok)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::fake::FakeKernel;
+    use klp_core::sig::TrustStore;
+
+    fn checker_items(root: &Path, cert: Option<PathBuf>) -> Vec<Item> {
+        let cfg = Config { module_cert: cert, repository: String::new(), ..Default::default() };
+        let agent = Agent::new(cfg, FakeKernel::new("7.3.5-1-pve"), None, TrustStore::default());
+        Checker { agent: &agent, root: root.to_path_buf() }.run()
+    }
+
+    #[test]
+    fn detects_secure_boot_from_the_real_efivar_and_requires_mok() {
+        let t = tempfile::tempdir().unwrap();
+        let var = t.path().join("sys/firmware/efi/efivars/SecureBoot-8be4df61-93ca-11d2-aa0d-00e098032b8c");
+        std::fs::create_dir_all(var.parent().unwrap()).unwrap();
+        // Bytes as read from a Secure Boot host: attributes 0x06, value 1.
+        std::fs::write(&var, [0x06, 0x00, 0x00, 0x00, 0x01]).unwrap();
+
+        let items = checker_items(t.path(), Some(t.path().join("missing-cert.der")));
+        let sb = items.iter().find(|i| i.check == "secure-boot").unwrap();
+        assert_eq!(sb.detail, "enabled");
+        let mok = items.iter().find(|i| i.check == "mok").expect("MOK is checked when Secure Boot is on");
+        assert_eq!(mok.level, Level::Fail);
+
+        std::fs::write(&var, [0x06, 0x00, 0x00, 0x00, 0x00]).unwrap();
+        let items = checker_items(t.path(), None);
+        assert_eq!(items.iter().find(|i| i.check == "secure-boot").unwrap().detail, "disabled or not EFI");
+        assert!(!items.iter().any(|i| i.check == "mok"));
+    }
 }

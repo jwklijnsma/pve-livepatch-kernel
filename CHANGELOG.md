@@ -6,6 +6,40 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-11-23
+
+Third round from the real-host test, which added a stalled transition
+(apply and revert), Secure Boot with MOK enrollment under OVMF, legacy BIOS,
+and three backported CVE fixes on 7.3.4-1-pve (in `vmlinux` and in the
+`overlay` module) verified with a reproducer before, during and after the
+livepatch.
+
+### Fixed
+
+- `check` never detected Secure Boot: the EFI global variable GUID was
+  wrong (`…-e098032b8c4c` instead of `…-00e098032b8c`). It now reports
+  Secure Boot and fails when the module certificate is not enrolled, so
+  `setup` no longer says "all checks passed" on such hosts.
+- An `apply` whose stalled transition was reversed automatically was stored
+  as `reverted` and `status` returned 0. It is now `failed` (exit 20), like
+  other failed applies; `reverted` stays reserved for the operator's
+  `revert`.
+- Builder image: `rustfmt` from trixie-backports (matching rustc 1.94.1),
+  so the kernel build no longer warns about it.
+
+### Added
+
+- `status` notes a livepatch module of ours that is still loaded but unused
+  (e.g. after a stalled revert that the kernel finished later) and how to
+  remove it.
+
+### Changed
+
+- `make builder-image` adds the musl target with rustup; documented in
+  `docs/self-hosting.md`.
+- Docs: `mok enroll` needs a terminal; hooks timing in the config template;
+  `7.3.4-1-pve` in `docs/toolchains.md`.
+
 ## [0.1.2] - 2026-11-23
 
 Second round from the real-host test (PVE 9.2, 7.3.5-1-pve). That test
@@ -107,7 +141,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/prepaid-host/pve-klp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/prepaid-host/pve-klp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/prepaid-host/pve-klp/releases/tag/v0.1.0

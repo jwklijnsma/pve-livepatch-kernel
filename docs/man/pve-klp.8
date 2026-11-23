@@ -1,4 +1,4 @@
-.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.2" "System Administration"
+.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.3" "System Administration"
 .SH NAME
 pve-klp \- verify and load kernel livepatches on Proxmox VE hosts
 .SH SYNOPSIS
@@ -70,6 +70,9 @@ hourly. Disabled by default.
 .B mok enroll
 Import the module signing certificate as Machine Owner Key. Confirm the
 enrollment in MokManager on the console during the next boot.
+.B mokutil
+asks for a one-time password on the terminal; it does not read it from a
+pipe.
 .SH VERIFICATION
 Before loading,
 .B pve-klp

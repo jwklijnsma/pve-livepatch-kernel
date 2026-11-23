@@ -27,6 +27,7 @@ deb:
 # Builder container for livepatch modules (see docs/self-hosting.md).
 ENGINE ?= podman
 builder-image:
+	command -v rustup >/dev/null && rustup target add x86_64-unknown-linux-musl || true
 	cargo build --release --locked -p pve-klp-tool --target x86_64-unknown-linux-musl
 	cp target/x86_64-unknown-linux-musl/release/pve-klp-tool builder/pve-klp-tool
 	$(ENGINE) build -t pve-klp-builder builder/

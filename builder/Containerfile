@@ -25,10 +25,11 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
       printf 'deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/%s trixie-backports main\n' "$BACKPORTS_SNAPSHOT"; \
     } > /etc/apt/sources.list.d/snapshot.list
 
-# gcc-14 14.2.0-19, binutils 2.44 and dwarves (pahole) from trixie; rustc,
-# rust-src and bindgen from trixie-backports (7.3.5-1-pve: rustc 1.94.1,
-# LLVM 21). gawk is required by klp-build. qemu and busybox-static are for
-# the QEMU stage (qemu-test.sh).
+# From trixie: gcc-14 14.2.0-19, binutils 2.44, dwarves (pahole), bindgen
+# (backports has none, so -t falls back to main). From trixie-backports:
+# rustc, rust-src and rustfmt, which formats generated Rust bindings during
+# the kernel build (7.3.x: rustc 1.94.1, LLVM 21). gawk is required by
+# klp-build; qemu and busybox-static are for the QEMU stage (qemu-test.sh).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential gcc-14 binutils bc bison flex cpio kmod rsync gawk \
@@ -36,7 +37,7 @@ RUN apt-get update \
       git git-buildpackage quilt devscripts ca-certificates curl gnupg python3 \
       qemu-system-x86 busybox-static \
  && apt-get install -y --no-install-recommends -t trixie-backports \
-      rustc rust-src bindgen \
+      rustc rust-src rustfmt bindgen \
  && rm -rf /var/lib/apt/lists/*
 
 # Proxmox repository, only to download the shipped kernel and headers

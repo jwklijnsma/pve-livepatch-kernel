@@ -11,6 +11,12 @@ fast but is optional.
 make builder-image          # builds pve-klp-tool and the container image
 ```
 
+This needs the musl target in your Rust toolchain; the Makefile adds it with
+`rustup target add x86_64-unknown-linux-musl` when rustup is available. The
+tool is pure Rust, so no musl C toolchain is needed. A locally built tool
+differs bit by bit from the release binary (different rustc); use the
+attested release binary if you want to match the project's builds.
+
 Without a Rust toolchain, download `pve-klp-tool-x86_64-linux-musl` from the
 release page to `builder/pve-klp-tool`, make it executable and run
 `podman build -t pve-klp-builder builder/`.
@@ -100,7 +106,9 @@ pve-klp apply
 ```
 
 With Secure Boot, enroll the module certificate once (`pve-klp mok enroll`,
-confirm at the console on the next boot). Without Secure Boot the kernel
+confirm at the console on the next boot). `mok enroll` asks for a one-time
+password on a terminal (mokutil reads it from the TTY, not from a pipe); for
+automation run it under `expect` or call `mokutil --import` yourself. Without Secure Boot the kernel
 loads the module anyway but cannot verify the signature: every load taints
 the kernel with `E` ("signature and/or required key missing"). The agent's
 manifest signature check is what protects these hosts.

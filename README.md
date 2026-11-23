@@ -23,12 +23,16 @@ reboot:        REQUIRED
                - not fixable by livepatch: CVE-2026-ZZZZZ
 ```
 
-> **Early release.** The full chain (build from the Proxmox source, Gate A,
-> signing, `setup`, `apply`, `revert`, reload after reboot) has run on a real
-> `7.3.5-1-pve` kernel in a nested PVE 9.2 VM, with a transition time of about
-> 1.6 s. No project builds of livepatch modules are published yet: build your
-> own with [docs/self-hosting.md](docs/self-hosting.md). Feedback and testers
-> on non-production hosts are very welcome.
+> **Early release.** Tested on real Proxmox VE 9.2 hosts (nested, kernels
+> `7.3.4-1-pve` and `7.3.5-1-pve`): the full chain from the Proxmox source to
+> `apply`, `revert` and the reload after reboot; atomic replace between
+> levels; a stalled transition that is reversed without `force`; Secure Boot
+> with MOK; and three backported CVE fixes (one in `vmlinux`, one in the
+> `overlay` module) whose reproducer is vulnerable before, fixed with the
+> livepatch, and vulnerable again after `revert`. Transitions take about
+> 1.6 s. No project builds of livepatch modules are published yet: build
+> your own with [docs/self-hosting.md](docs/self-hosting.md). Feedback and
+> testers on non-production hosts are very welcome.
 
 ## Why
 
@@ -183,10 +187,10 @@ are out of scope.
 | | Milestone | State |
 | --- | --- | --- |
 | 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | done (nested PVE 9.2, 7.3.5-1-pve) |
-| 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | planned |
+| 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | fixes done on 7.3.4-1-pve with reproducer; PSA review open |
 | 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | `builder/run.sh` per kernel done; scheduled CI planned |
 | 3 | Agent 0.1: check, status, apply, revert, boot unit, .deb, Ansible role | released in v0.1.0, Ansible role planned |
-| 4 | Nested-PVE tests under load, canary on AMD and Intel hardware, 24 h soak | planned |
+| 4 | Nested-PVE tests under load, canary on AMD and Intel hardware, 24 h soak | nested tests under host load, stalled transitions and Secure Boot done; guests under load, bare metal and soak open |
 | 5 | Public project builds, status page, APT repository | planned |
 
 ## FAQ
