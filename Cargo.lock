@@ -504,7 +504,7 @@ dependencies = [
 
 [[package]]
 name = "klp-core"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "base64",
@@ -608,7 +608,7 @@ dependencies = [
 
 [[package]]
 name = "pve-klp"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",
@@ -629,7 +629,7 @@ dependencies = [
 
 [[package]]
 name = "pve-klp-tool"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "chrono",

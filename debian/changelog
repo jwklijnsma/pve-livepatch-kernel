@@ -1,3 +1,11 @@
+pve-klp (0.1.2-1) trixie; urgency=medium
+
+  * Agent: status reports "pending" after a reboot until the boot unit ran.
+  * Agent: on hold after revert, the timer no longer contacts the repository.
+  * Builder: fixed build identity, so the cached original build is reusable.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Mon, 23 Nov 2026 16:01:45 +0000
+
 pve-klp (0.1.1-1) trixie; urgency=medium
 
   * Agent: accept the out-of-tree taint the livepatch module sets itself.

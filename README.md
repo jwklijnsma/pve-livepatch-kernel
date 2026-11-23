@@ -145,9 +145,9 @@ nothing old is loaded.
 | --- | --- |
 | 0 | livepatch active, no known CVE needs a reboot |
 | 10 | livepatch active, but a reboot is required |
-| 11 | no livepatch active |
+| 11 | no livepatch active (state `pending` right after a reboot, until the boot unit has reloaded it) |
 | 12 | manifest expired: no further patches are coming |
-| 20 | last operation failed, or transition in progress |
+| 20 | last operation failed, or an operation or transition in progress |
 
 | `apply` / `boot` / `revert` | Meaning |
 | --- | --- |
@@ -155,6 +155,9 @@ nothing old is loaded.
 | 2 | failed and backed out |
 | 3 | rejected by verification or policy; nothing loaded |
 | 4 | precondition failed (transition running, forced leftover, foreign patch) |
+
+systemd shows these codes with LSB names (`status=3/NOTIMPLEMENTED` for a
+rejected manifest); only the meanings above apply.
 
 Metrics: `/var/lib/prometheus/node-exporter/pve_klp.prom`
 (`pve_klp_active_level`, `pve_klp_reboot_required`, `pve_klp_failed`, ...),

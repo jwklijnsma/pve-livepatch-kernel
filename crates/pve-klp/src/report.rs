@@ -118,7 +118,9 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         kernel,
         kernel_build_id: agent.kernel.build_id()?,
         ring: agent.cfg.ring.clone(),
-        phase: ks.phase,
+        // The stored phase describes the last operation. After a reboot the
+        // kernel has forgotten the livepatch until the boot unit reloads it.
+        phase: if ks.phase == Phase::Active && active.is_none() { Phase::Pending } else { ks.phase },
         held: ks.held,
         highest_accepted: ks.highest_accepted,
         active,
@@ -326,6 +328,9 @@ mod tests {
         r.phase = Phase::None;
         assert_eq!(r.exit_code(), exit::NOT_ACTIVE);
         r.phase = Phase::Reverted;
+        assert_eq!(r.exit_code(), exit::NOT_ACTIVE);
+        // After reboot, before the boot unit: nothing loaded yet.
+        r.phase = Phase::Pending;
         assert_eq!(r.exit_code(), exit::NOT_ACTIVE);
 
         let mut r = report();

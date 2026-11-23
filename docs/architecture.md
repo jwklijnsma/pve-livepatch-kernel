@@ -108,6 +108,9 @@ itself.
   those the livepatch module itself carries (`/sys/module/<m>/taint`:
   `O`, `E`, `K`). On a host without ZFS, the module's own `O` is the first
   out-of-tree taint and is expected.
+- **Hold:** `revert` puts the kernel on hold. The timer and the boot unit
+  then do nothing, without contacting the repository. An explicit `apply`
+  always evaluates the repository; the hold ends when it loads a level.
 - **Expiry:** an expired manifest is never applied fresh. After a reboot into
   the same kernel, the previously active module is reloaded even if its
   manifest expired meanwhile (`allow_expired_on_boot`), because running
@@ -117,7 +120,7 @@ itself.
   the node to the operator.
 - **Never worse than before.** If post-checks fail after a completed
   transition (missing function in sysfs, new `Oops`/`BUG`/`WARNING` in the
-  kernel log, new taint bits other than `K`/`E`, failing hook), the new
+  kernel log, new taint bits other than those the module carries itself (`O`, `E`, `K`), failing hook), the new
   module is disabled and unloaded and the previous level is restored from
   the local cache.
 - **One owner.** Atomic replace disables all other livepatches. A foreign

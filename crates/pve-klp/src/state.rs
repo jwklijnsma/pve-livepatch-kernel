@@ -18,6 +18,10 @@ pub enum Phase {
     Active,
     Reverted,
     Failed,
+    /// Reported only, never stored: the state says active, but the kernel
+    /// has no livepatch of ours loaded (after a reboot, before the boot
+    /// unit has run, or after a manual rmmod).
+    Pending,
 }
 
 impl Phase {
@@ -30,6 +34,7 @@ impl Phase {
             Phase::Active => "active",
             Phase::Reverted => "reverted",
             Phase::Failed => "failed",
+            Phase::Pending => "pending",
         }
     }
 }

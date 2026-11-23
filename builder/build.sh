@@ -33,9 +33,20 @@ NAME=$(pve-klp-tool module-name --kernel "$KVER" --level "$LEVEL")
 # (CONFIG_LOCALVERSION="-1-pve"). An unset LOCALVERSION makes
 # scripts/setlocalversion append "+" for a git tree; an empty one does not.
 export LOCALVERSION=
+# linux_banner contains user@host of the build. In a container the host is
+# random per run, which makes the reused original build differ from the
+# patched one ("changed data: linux_banner"). Fix both.
+export KBUILD_BUILD_USER=pve-klp KBUILD_BUILD_HOST=pve-klp-builder
 
 "$HERE/fetch-source.sh" "$KVER" "$TREE"
-[ -f "$SHIPPED/config" ] || TREE="$TREE" "$HERE/fetch-shipped.sh" "$KVER" "$SHIPPED"
+# Fetch again unless every artifact the later stages use is there
+# (workdirs from older versions lack some of them).
+for f in config System.map Module.symvers build-id vmlinuz modules; do
+  if [ ! -e "$SHIPPED/$f" ]; then
+    TREE="$TREE" "$HERE/fetch-shipped.sh" "$KVER" "$SHIPPED"
+    break
+  fi
+done
 # Left behind by v0.1.0 of this script; it doubles the suffix.
 rm -f "$TREE/localversion-pve"
 
@@ -53,11 +64,30 @@ mapfile -t PATCHES < <(python3 -c 'import json,sys; print("\n".join(json.load(op
 [ "${#PATCHES[@]}" -gt 0 ] && [ -n "${PATCHES[0]}" ] || { log "nothing to livepatch for $KVER"; exit 0; }
 
 log "klp-build: ${#PATCHES[@]} patch(es) -> $NAME.ko"
+# The original build does not change for a kernel release, so klp-build
+# can reuse it (klp-tmp/1-orig in 7.3, klp-tmp/orig in 6.19/7.0), but only
+# if it was made with the same config, toolchain and build identity. A
+# cache without a matching stamp (e.g. from 0.1.1) is rebuilt once.
+STAMP="$TREE/klp-tmp/.pve-klp-orig-stamp"
+WANT_STAMP=$(
+  echo "user=$KBUILD_BUILD_USER host=$KBUILD_BUILD_HOST"
+  sha256sum "$TREE/.config" | cut -d' ' -f1
+  gcc --version | head -n1
+  rustc --version 2>/dev/null || true
+  git -C "$TREE" rev-parse HEAD
+)
 SC=()
-# The original build never changes for a kernel release: reuse it
-# (klp-tmp/1-orig in 7.3, klp-tmp/orig in 6.19/7.0).
-compgen -G "$TREE/klp-tmp/*orig" >/dev/null && SC=(--short-circuit=2)
-( cd "$TREE" && ./scripts/livepatch/klp-build -j "$JOBS" -T "${SC[@]}" -o "$OUT/$NAME.ko" "${PATCHES[@]}" ) 2>&1 | tee "$OUT/build.log"
+if compgen -G "$TREE/klp-tmp/*orig" >/dev/null; then
+  if [ "$(cat "$STAMP" 2>/dev/null)" = "$WANT_STAMP" ]; then
+    SC=(--short-circuit=2)
+    log "reusing the original build from klp-tmp"
+  else
+    log "cached original build has a different stamp: rebuilding it"
+    rm -rf "$TREE/klp-tmp"
+  fi
+fi
+( cd "$TREE" && ./scripts/livepatch/klp-build -j "$JOBS" -T ${SC[@]+"${SC[@]}"} -o "$OUT/$NAME.ko" "${PATCHES[@]}" ) 2>&1 | tee "$OUT/build.log"
+printf '%s\n' "$WANT_STAMP" > "$STAMP"
 
 # Patched functions as reported by objtool klp diff, e.g.
 #   vmlinux.o: changed function: cmdline_proc_show

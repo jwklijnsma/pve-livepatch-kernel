@@ -1,4 +1,4 @@
-.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.1" "System Administration"
+.TH PVE-KLP 8 "2026-11-23" "pve-klp 0.1.2" "System Administration"
 .SH NAME
 pve-klp \- verify and load kernel livepatches on Proxmox VE hosts
 .SH SYNOPSIS
@@ -53,9 +53,12 @@ local cache, without network access. Run by
 .TP
 .B revert
 Disable and unload the active livepatch and put the node on hold:
-neither the timer nor the boot unit loads a livepatch again until the
-next explicit
+neither the timer nor the boot unit loads a livepatch again, and the
+timer does not contact the repository, until the next explicit
 .BR apply .
+An explicit
+.B apply
+always evaluates the repository; the hold ends when it loads a level.
 .TP
 .B auto enable\fR|\fBdisable
 Enable or disable
@@ -97,6 +100,13 @@ module information. The kernel verifies the module signature itself.
 3 rejected by verification or policy, nothing loaded;
 4 precondition failed;
 1 other error.
+.PP
+systemd labels exit codes of units with LSB names (2 INVALIDARGUMENT,
+3 NOTIMPLEMENTED, 4 NOPERMISSION). For
+.B pve-klp
+they mean only what is listed above; for example a rejected rollback in
+.B pve-klp-auto.service
+shows up as status=3/NOTIMPLEMENTED.
 .SH FILES
 .TP
 .I /etc/pve-klp/pve-klp.toml
@@ -106,7 +116,11 @@ Configuration.
 Trusted manifest signing keys (minisign format).
 .TP
 .I /etc/pve-klp/hooks.d/
-Executables run after each successful transition with
+Executables run, in name order, after each successful load by
+.B apply
+or the boot reload (not after
+.BR revert ),
+with
 .BR PVE_KLP_KERNEL ,
 .B PVE_KLP_LEVEL
 and

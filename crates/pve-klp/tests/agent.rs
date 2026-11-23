@@ -391,6 +391,23 @@ fn boot_reloads_from_cache_without_network() {
 }
 
 #[test]
+fn status_reports_pending_after_reboot_until_boot_unit_ran() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    assert_eq!(report::collect(&a).unwrap().phase, Phase::Active);
+    // Reboot into the same kernel: state says active, kernel has nothing.
+    let b = env.agent(kernel());
+    let r = report::collect(&b).unwrap();
+    assert_eq!(r.phase, Phase::Pending);
+    assert_eq!(r.exit_code(), report::exit::NOT_ACTIVE);
+    assert!(serde_json::to_string(&r).unwrap().contains("\"phase\":\"pending\""));
+    b.boot().unwrap();
+    assert_eq!(report::collect(&b).unwrap().phase, Phase::Active);
+}
+
+#[test]
 fn boot_reloads_expired_manifest_with_warning() {
     let env = Env::new();
     env.publish_level(1);
@@ -525,8 +542,11 @@ fn revert_holds_until_explicit_apply() {
     a.apply(&explicit()).unwrap();
     assert_eq!(a.revert().unwrap(), Outcome::Reverted { levels: vec![1] });
     assert!(a.kernel.loaded().is_empty());
-    // Timer run respects the hold.
+    // Timer run respects the hold, without even reading the repository.
+    let moved = env.repo.with_extension("away");
+    std::fs::rename(&env.repo, &moved).unwrap();
     assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(_)));
+    std::fs::rename(&moved, &env.repo).unwrap();
     // Boot respects the hold.
     let b = env.agent(kernel());
     assert_eq!(b.boot().unwrap(), Outcome::NothingToLoad);

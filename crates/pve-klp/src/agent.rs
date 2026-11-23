@@ -155,6 +155,12 @@ impl<K: KernelOps> Agent<K> {
     pub fn apply(&self, opts: &ApplyOpts) -> Result<Outcome, ApplyError> {
         let release = self.kernel.release()?;
         let mut state = State::load(&self.cfg.state_file())?;
+        // On hold after `revert`: the timer does nothing at all, not even
+        // contact the repository. Only an explicit `apply` resumes.
+        if state.get(&release).held && !opts.explicit {
+            self.log("livepatching is on hold after `pve-klp revert`; run `pve-klp apply` to resume");
+            return Ok(Outcome::Skipped("held after revert".into()));
+        }
         let active = self.preflight(opts.replace_foreign)?;
         let repo = self.repo.as_ref().ok_or_else(|| anyhow!("no repository configured"))?;
 

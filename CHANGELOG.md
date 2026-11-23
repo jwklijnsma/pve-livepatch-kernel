@@ -6,6 +6,36 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-23
+
+Second round from the real-host test (PVE 9.2, 7.3.5-1-pve). That test
+confirmed the 0.1.1 fixes, the QEMU stage (7 s with KVM, including the
+replacement of the previous level), atomic replace of level 1 by level 2,
+restore of level 1 after a failing hook, anti-rollback after `revert`,
+hooks, and 10 revert/apply cycles under full CPU load without kernel
+warnings.
+
+### Fixed
+
+- `build.sh`: a level-2 build reusing the cached original build failed with
+  "changed data: linux_banner", because the banner contains the random
+  container host name. Build user and host are now fixed
+  (`pve-klp@pve-klp-builder`), and the cache carries a stamp of config,
+  toolchain and build identity; a cache without a matching stamp is rebuilt
+  once.
+- `build.sh`: fetches the shipped packages again when any artifact the later
+  stages need is missing, not only the config (workdirs from 0.1.0 lacked
+  `vmlinuz`).
+- `status`: right after a reboot, before the boot unit has reloaded the
+  livepatch, the phase is `pending` instead of the stored `active`.
+
+### Changed
+
+- On hold after `revert`, the timer returns immediately without contacting
+  the repository. An explicit `apply` still evaluates it.
+- Docs: hooks run after `apply` and the boot reload, not after `revert`;
+  systemd's LSB names for the exit codes; the module's own `O` taint.
+
 ## [0.1.1] - 2026-11-23
 
 Fixes from the first run on a real Proxmox VE 9.2 host with kernel
@@ -77,6 +107,7 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...HEAD
+[0.1.2]: https://github.com/prepaid-host/pve-klp/compare/v0.1.1...v0.1.2
 [0.1.1]: https://github.com/prepaid-host/pve-klp/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/prepaid-host/pve-klp/releases/tag/v0.1.0
