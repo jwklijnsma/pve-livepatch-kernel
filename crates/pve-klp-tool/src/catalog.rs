@@ -92,8 +92,8 @@ pub fn lint(l: &Loaded) -> Vec<String> {
         p.push("upstream_commits is empty".into());
     }
     for c in &e.upstream_commits {
-        if c.len() < 12 || !c.bytes().all(|b| b.is_ascii_hexdigit()) {
-            p.push(format!("upstream commit {c:?} is not a hex sha (>= 12 chars)"));
+        if !is_commit_id(c) {
+            p.push(format!("upstream commit {c:?} is not a hex sha (12-40 chars)"));
         }
     }
     if !["low", "medium", "high", "critical"].contains(&e.severity.as_str()) {
@@ -250,6 +250,10 @@ pub fn resolve(
     Ok(r)
 }
 
+fn is_commit_id(c: &str) -> bool {
+    (12..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
 /// `git patch-id --stable` of some diff text.
 fn patch_id_of(diff: &[u8]) -> Result<Option<String>> {
     use std::io::Write;
@@ -271,7 +275,13 @@ pub fn check_patch_id(l: &Loaded, upstream: &Path) -> Result<Option<String>> {
     let ours = patch_id_of(&std::fs::read(l.dir.join(file))?)?;
     let mut theirs = Vec::new();
     for c in &l.entry.upstream_commits {
-        let out = Command::new("git").arg("-C").arg(upstream).args(["show", "--format=", c]).output()?;
+        // Catalog content is untrusted input until reviewed: never let a
+        // "commit" reach git as an option.
+        if !is_commit_id(c) {
+            return Ok(Some(format!("upstream commit {c:?} is not a hex sha (12-40 chars)")));
+        }
+        let out =
+            Command::new("git").arg("-C").arg(upstream).args(["show", "--format=", "--end-of-options", c]).output()?;
         if !out.status.success() {
             return Ok(Some(format!("upstream commit {c} not found in {}", upstream.display())));
         }
@@ -381,6 +391,12 @@ class: not-livepatchable
         let e = load(t.path()).unwrap();
         let p = lint(&e[0]);
         assert!(p.iter().any(|m| m.contains("hex sha")));
+        // An option-looking "commit" never reaches git.
+        let mut evil = e[0].clone();
+        evil.entry.upstream_commits = vec!["--output=/tmp/pwned".into()];
+        evil.entry.patches.insert("default".into(), "0001-fix.patch".into());
+        let msg = check_patch_id(&evil, t.path()).unwrap().unwrap();
+        assert!(msg.contains("not a hex sha"), "{msg}");
         assert!(p.iter().any(|m| m.contains("reason")));
     }
 

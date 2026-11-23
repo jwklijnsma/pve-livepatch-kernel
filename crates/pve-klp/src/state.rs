@@ -86,17 +86,28 @@ impl State {
 }
 
 /// Write via temp file + rename so a crash never leaves half a file.
+///
+/// The temp file gets a random name and is created with O_EXCL|O_NOFOLLOW,
+/// so a less privileged user who can write to the directory (e.g. the
+/// node_exporter textfile directory) cannot redirect root's write through a
+/// planted symlink. rename(2) replaces a symlink at `path` itself instead of
+/// following it.
 pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
     let dir = path.parent().context("path has no parent")?;
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
-    let tmp = dir.join(format!(".{}.tmp", path.file_name().unwrap_or_default().to_string_lossy()));
-    {
-        let mut f = std::fs::File::create(&tmp).with_context(|| format!("creating {}", tmp.display()))?;
-        f.write_all(data)?;
-        f.sync_all()?;
-    }
-    std::fs::rename(&tmp, path).with_context(|| format!("renaming to {}", path.display()))
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    let mut tmp = tempfile::Builder::new()
+        .prefix(&format!(".{name}."))
+        .suffix(".tmp")
+        .tempfile_in(dir)
+        .with_context(|| format!("creating temp file in {}", dir.display()))?;
+    tmp.write_all(data)?;
+    tmp.as_file().set_permissions(std::fs::Permissions::from_mode(0o644))?;
+    tmp.as_file().sync_all()?;
+    tmp.persist(path).map_err(|e| e.error).with_context(|| format!("renaming to {}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -118,5 +129,20 @@ mod tests {
         assert_eq!(back.kernels.len(), MAX_KERNELS);
         assert!(!back.kernels.contains_key("7.3.0-1-pve"));
         assert_eq!(back.get("7.3.19-1-pve").highest_accepted, 19);
+    }
+
+    #[test]
+    fn planted_symlinks_are_not_followed() {
+        let t = tempfile::tempdir().unwrap();
+        let victim = t.path().join("victim");
+        std::fs::write(&victim, b"untouched").unwrap();
+        let target = t.path().join("pve_klp.prom");
+        // The old fixed temp name, and the target itself, point at the victim.
+        std::os::unix::fs::symlink(&victim, t.path().join(".pve_klp.prom.tmp")).unwrap();
+        std::os::unix::fs::symlink(&victim, &target).unwrap();
+        write_atomic(&target, b"metrics").unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"untouched");
+        assert!(!std::fs::symlink_metadata(&target).unwrap().file_type().is_symlink());
+        assert_eq!(std::fs::read(&target).unwrap(), b"metrics");
     }
 }
