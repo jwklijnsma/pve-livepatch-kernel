@@ -1,0 +1,5 @@
+target/release/pve-klp usr/sbin
+packaging/systemd/pve-klp-boot.service usr/lib/systemd/system
+packaging/systemd/pve-klp-auto.service usr/lib/systemd/system
+packaging/systemd/pve-klp-auto.timer usr/lib/systemd/system
+etc/pve-klp.toml etc/pve-klp

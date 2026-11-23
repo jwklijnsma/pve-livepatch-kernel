@@ -1,0 +1,9 @@
+/target
+*.key
+/debian/.cargo
+/debian/pve-klp/
+/debian/files
+/debian/*.debhelper*
+/debian/*.substvars
+/debian/debhelper-build-stamp
+/build/

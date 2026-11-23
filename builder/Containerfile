@@ -1,0 +1,30 @@
+# Build environment for pve-klp livepatch modules.
+#
+# The toolchain must match the shipped kernel exactly: build.sh compares the
+# tree's .config (which records CC_VERSION_TEXT, AS/LD/PAHOLE/RUSTC_VERSION)
+# byte-for-byte with /boot/config-<kver> and aborts on any difference.
+#
+# Pin the base image by digest and the packages by snapshot date for each
+# supported kernel series. Values below are for 7.3.5-1-pve and must be
+# verified in milestone 0.
+ARG BASE=docker.io/library/debian:trixie@sha256:REPLACE_WITH_DIGEST
+FROM ${BASE}
+
+ARG SNAPSHOT=20261120T000000Z
+RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s trixie main\n' "$SNAPSHOT" > /etc/apt/sources.list.d/snapshot.list \
+ && printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s trixie-backports main\n' "$SNAPSHOT" >> /etc/apt/sources.list.d/snapshot.list \
+ && rm -f /etc/apt/sources.list.d/debian.sources
+
+# gcc-14 14.2.0-19 and binutils 2.44 are trixie's defaults. The 7.3 kernel is
+# also built with Rust (rustc from trixie-backports) and pahole: pin both.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential gcc-14 binutils bc bison flex cpio kmod rsync \
+      libelf-dev libssl-dev libxxhash-dev libdw-dev dwarves zstd xz-utils \
+      git git-buildpackage quilt devscripts ca-certificates curl gnupg python3 \
+ && apt-get install -y --no-install-recommends -t trixie-backports \
+      rustc rust-src bindgen \
+ && rm -rf /var/lib/apt/lists/*
+
+COPY pve-klp-tool /usr/local/bin/pve-klp-tool
+COPY *.sh /opt/pve-klp/builder/
+WORKDIR /work

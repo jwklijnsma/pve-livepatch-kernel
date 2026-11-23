@@ -1,0 +1,56 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy, rustfmt
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked
+      - name: static agent binary
+        run: cargo build --release --locked -p pve-klp --target x86_64-unknown-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pve-klp-x86_64-linux-musl
+          path: target/x86_64-unknown-linux-musl/release/pve-klp
+
+  catalog:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: cargo run --locked -q -p pve-klp-tool -- lint --catalog catalog
+
+  shell:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - run: shellcheck -x -S warning builder/*.sh
+
+  deb:
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y build-essential debhelper curl ca-certificates
+      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - run: . "$HOME/.cargo/env" && dpkg-buildpackage -us -uc -b -d
+      - run: mkdir -p dist && mv ../pve-klp_*.deb dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: pve-klp-deb
+          path: dist/*.deb

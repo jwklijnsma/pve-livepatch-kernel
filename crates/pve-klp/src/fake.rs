@@ -1,0 +1,268 @@
+//! In-memory emulation of the kernel's livepatch behaviour, used by the
+//! test suite. It models what matters for the agent: per-patch
+//! transitions, atomic replace, reversal, module refcounts, taint and
+//! kernel log output.
+
+use std::cell::RefCell;
+use std::fs::File;
+use std::io::{Read, Seek, SeekFrom};
+use std::rc::Rc;
+use std::time::Duration;
+
+use anyhow::{Result, bail};
+
+use crate::kernel::{BlockingTask, KernelOps, KmsgWatch, LoadError, ModuleInfo, PatchInfo, taint};
+
+#[derive(Debug, Clone)]
+pub struct FakePatch {
+    pub name: String,
+    pub enabled: bool,
+    pub transition: bool,
+    polls_left: u32,
+    pub functions: Vec<(String, bool)>,
+}
+
+#[derive(Debug)]
+pub struct FakeState {
+    pub release: String,
+    pub build_id: Option<String>,
+    pub patches: Vec<FakePatch>,
+    pub modules: Vec<ModuleInfo>,
+    pub tainted: u64,
+    /// Emulate Secure Boot: unsigned modules are rejected.
+    pub require_signature: bool,
+    /// Polls of `patch()` until a transition completes.
+    pub transition_polls: u32,
+    /// The enable transition never completes (e.g. a vCPU thread sleeps
+    /// in a patched function).
+    pub stuck: bool,
+    /// The reverse transition never completes either.
+    pub reverse_stuck: bool,
+    /// Kernel log lines emitted by the next module load.
+    pub kmsg_on_load: Vec<String>,
+    pub taint_on_load: u64,
+    /// Functions every loaded patch reports in sysfs.
+    pub functions_on_load: Vec<(String, bool)>,
+    pub blockers: Vec<BlockingTask>,
+    /// Chronological record of mutating calls, for assertions.
+    pub calls: Vec<String>,
+    pub slept: Duration,
+}
+
+pub struct FakeKernel {
+    pub st: RefCell<FakeState>,
+    kmsg: Rc<RefCell<Vec<String>>>,
+}
+
+impl FakeKernel {
+    pub fn new(release: &str) -> Self {
+        Self {
+            st: RefCell::new(FakeState {
+                release: release.into(),
+                build_id: Some("00112233445566778899aabbccddeeff00112233".into()),
+                patches: vec![],
+                modules: vec![],
+                tainted: taint::PROPRIETARY_MODULE | taint::OOT_MODULE, // ZFS
+                require_signature: false,
+                transition_polls: 3,
+                stuck: false,
+                reverse_stuck: false,
+                kmsg_on_load: vec![],
+                taint_on_load: 0,
+                functions_on_load: vec![("vmlinux:tcp_fix_me,1".into(), true)],
+                blockers: vec![],
+                calls: vec![],
+                slept: Duration::ZERO,
+            }),
+            kmsg: Rc::new(RefCell::new(vec![])),
+        }
+    }
+
+    /// A livepatch from another vendor, already active.
+    pub fn load_foreign(&self, name: &str) {
+        let mut st = self.st.borrow_mut();
+        st.modules.push(ModuleInfo { name: name.into(), taint: "K".into(), refcnt: 1 });
+        st.patches.push(FakePatch {
+            name: name.into(),
+            enabled: true,
+            transition: false,
+            polls_left: 0,
+            functions: vec![],
+        });
+        st.tainted |= taint::LIVEPATCH;
+    }
+
+    pub fn log_kmsg(&self, line: &str) {
+        self.kmsg.borrow_mut().push(line.into());
+    }
+
+    pub fn active(&self) -> Vec<String> {
+        self.st.borrow().patches.iter().filter(|p| p.enabled).map(|p| p.name.clone()).collect()
+    }
+
+    pub fn loaded(&self) -> Vec<String> {
+        self.st.borrow().modules.iter().map(|m| m.name.clone()).collect()
+    }
+
+    fn complete(st: &mut FakeState, name: &str) {
+        let Some(i) = st.patches.iter().position(|p| p.name == name) else { return };
+        let p = &mut st.patches[i];
+        p.transition = false;
+        if p.enabled {
+            // Atomic replace: every other patch is discarded and its module
+            // reference dropped.
+            let others: Vec<String> = st.patches.iter().filter(|q| q.name != name).map(|q| q.name.clone()).collect();
+            st.patches.retain(|q| q.name == name);
+            for o in others {
+                Self::put(st, &o);
+            }
+        } else {
+            st.patches.remove(i);
+            Self::put(st, name);
+        }
+    }
+
+    fn put(st: &mut FakeState, module: &str) {
+        if let Some(m) = st.modules.iter_mut().find(|m| m.name == module) {
+            m.refcnt = m.refcnt.saturating_sub(1);
+        }
+    }
+}
+
+impl KernelOps for FakeKernel {
+    fn release(&self) -> Result<String> {
+        Ok(self.st.borrow().release.clone())
+    }
+
+    fn build_id(&self) -> Result<Option<String>> {
+        Ok(self.st.borrow().build_id.clone())
+    }
+
+    fn livepatches(&self) -> Result<Vec<PatchInfo>> {
+        Ok(self
+            .st
+            .borrow()
+            .patches
+            .iter()
+            .map(|p| PatchInfo { name: p.name.clone(), enabled: p.enabled, transition: p.transition })
+            .collect())
+    }
+
+    fn patch(&self, name: &str) -> Result<Option<PatchInfo>> {
+        let mut st = self.st.borrow_mut();
+        let (stuck, reverse_stuck) = (st.stuck, st.reverse_stuck);
+        let Some(p) = st.patches.iter_mut().find(|p| p.name == name) else { return Ok(None) };
+        if p.transition {
+            let blocked = if p.enabled { stuck } else { reverse_stuck };
+            if !blocked {
+                p.polls_left = p.polls_left.saturating_sub(1);
+                if p.polls_left == 0 {
+                    Self::complete(&mut st, name);
+                }
+            }
+        }
+        Ok(st.patches.iter().find(|p| p.name == name).map(|p| PatchInfo {
+            name: p.name.clone(),
+            enabled: p.enabled,
+            transition: p.transition,
+        }))
+    }
+
+    fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
+        let mut st = self.st.borrow_mut();
+        st.calls.push(format!("enabled {name}={}", enabled as u8));
+        let polls = st.transition_polls;
+        let Some(p) = st.patches.iter_mut().find(|p| p.name == name) else { bail!("no such patch {name}") };
+        if p.enabled == enabled {
+            bail!("write error: Invalid argument");
+        }
+        p.enabled = enabled;
+        p.transition = true;
+        p.polls_left = polls;
+        Ok(())
+    }
+
+    fn patched_functions(&self, name: &str) -> Result<Vec<(String, bool)>> {
+        let st = self.st.borrow();
+        Ok(st.patches.iter().find(|p| p.name == name).map(|p| p.functions.clone()).unwrap_or_default())
+    }
+
+    fn load_module(&self, file: &File) -> Result<(), LoadError> {
+        let mut f = file.try_clone().map_err(|e| LoadError::Other(e.to_string()))?;
+        let mut bytes = Vec::new();
+        f.seek(SeekFrom::Start(0))
+            .and_then(|_| f.read_to_end(&mut bytes))
+            .map_err(|e| LoadError::Other(e.to_string()))?;
+        let info = klp_core::elf::parse_modinfo(&bytes).map_err(|e| LoadError::Format(e.to_string()))?;
+        let name = info.name().unwrap_or_default().to_owned();
+        let signed = klp_core::elf::has_module_signature(&bytes);
+        let mut st = self.st.borrow_mut();
+        st.calls.push(format!("load {name}"));
+        if st.require_signature && !signed {
+            return Err(LoadError::Signature("Key was rejected by service".into()));
+        }
+        if info.vermagic_release() != Some(st.release.as_str()) {
+            return Err(LoadError::Format("Exec format error".into()));
+        }
+        if st.modules.iter().any(|m| m.name == name) {
+            return Err(LoadError::AlreadyLoaded);
+        }
+        let polls = st.transition_polls;
+        st.modules.push(ModuleInfo { name: name.clone(), taint: if signed { "K" } else { "KE" }.into(), refcnt: 1 });
+        st.tainted |= taint::LIVEPATCH | if signed { 0 } else { taint::UNSIGNED_MODULE };
+        st.tainted |= st.taint_on_load;
+        let functions = st.functions_on_load.clone();
+        st.patches.push(FakePatch { name, enabled: true, transition: true, polls_left: polls, functions });
+        // Emitted once, by the next load only.
+        let lines = std::mem::take(&mut st.kmsg_on_load);
+        drop(st);
+        self.kmsg.borrow_mut().extend(lines);
+        Ok(())
+    }
+
+    fn unload_module(&self, name: &str) -> Result<()> {
+        let mut st = self.st.borrow_mut();
+        st.calls.push(format!("unload {name}"));
+        let Some(i) = st.modules.iter().position(|m| m.name == name) else { bail!("{name}: not loaded") };
+        if st.modules[i].refcnt > 0 {
+            bail!("delete_module({name}): Resource temporarily unavailable");
+        }
+        st.modules.remove(i);
+        Ok(())
+    }
+
+    fn modules(&self) -> Result<Vec<ModuleInfo>> {
+        Ok(self.st.borrow().modules.clone())
+    }
+
+    fn tainted(&self) -> Result<u64> {
+        Ok(self.st.borrow().tainted)
+    }
+
+    fn kmsg_watch(&self) -> Result<Box<dyn KmsgWatch>> {
+        let pos = self.kmsg.borrow().len();
+        Ok(Box::new(FakeKmsg { buf: self.kmsg.clone(), pos }))
+    }
+
+    fn blocking_tasks(&self, _target: bool) -> Result<Vec<BlockingTask>> {
+        Ok(self.st.borrow().blockers.clone())
+    }
+
+    fn sleep(&self, d: Duration) {
+        self.st.borrow_mut().slept += d;
+    }
+}
+
+struct FakeKmsg {
+    buf: Rc<RefCell<Vec<String>>>,
+    pos: usize,
+}
+
+impl KmsgWatch for FakeKmsg {
+    fn drain(&mut self) -> Result<Vec<String>> {
+        let b = self.buf.borrow();
+        let out = b[self.pos..].to_vec();
+        self.pos = b.len();
+        Ok(out)
+    }
+}

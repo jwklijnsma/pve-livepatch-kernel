@@ -1,0 +1,30 @@
+[package]
+name = "pve-klp-tool"
+description = "Build-side tooling for pve-klp: catalog resolution, Gate A, manifests, signing"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[[bin]]
+name = "pve-klp-tool"
+path = "src/main.rs"
+
+[dependencies]
+klp-core = { path = "../klp-core", features = ["sign"] }
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+serde_norway.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+clap.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+object = { version = "0.41", default-features = false, features = ["write", "std"] }
+
+[lints]
+workspace = true

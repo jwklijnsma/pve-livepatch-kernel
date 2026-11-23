@@ -1,0 +1,5 @@
+pve-klp (0.1.0-1) trixie; urgency=medium
+
+  * Initial release: node agent with check, status, apply, boot, revert.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Mon, 23 Nov 2026 10:23:58 +0000

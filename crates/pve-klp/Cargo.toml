@@ -1,0 +1,43 @@
+[package]
+name = "pve-klp"
+description = "Node agent: verify and load kernel livepatches on Proxmox VE hosts"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[lib]
+name = "pve_klp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "pve-klp"
+path = "src/main.rs"
+
+[features]
+default = ["http"]
+# HTTPS repositories (rustls). Without it only file:// repositories work.
+http = ["dep:ureq"]
+
+[dependencies]
+klp-core = { path = "../klp-core" }
+anyhow.workspace = true
+thiserror.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+sha2.workspace = true
+hex.workspace = true
+clap.workspace = true
+toml.workspace = true
+libc.workspace = true
+ureq = { workspace = true, optional = true }
+
+[dev-dependencies]
+klp-core = { path = "../klp-core", features = ["sign"] }
+tempfile.workspace = true
+object = { version = "0.41", default-features = false, features = ["write", "std"] }
+
+[lints]
+workspace = true

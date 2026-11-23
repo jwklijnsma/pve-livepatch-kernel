@@ -1,0 +1,24 @@
+name: Bug report
+description: Something in the agent or the build tooling does not work
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Security issues must not be reported here. See SECURITY.md.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened, and what did you expect?
+    validations:
+      required: true
+  - type: textarea
+    id: status
+    attributes:
+      label: Output of `pve-klp status --json` and `pve-klp check`
+      render: json
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel (`uname -r`) and pve-klp version
+    validations:
+      required: true

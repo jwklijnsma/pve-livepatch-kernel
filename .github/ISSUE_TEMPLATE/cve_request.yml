@@ -1,0 +1,22 @@
+name: CVE request
+description: Ask for a kernel CVE to be added to the catalog
+labels: [catalog]
+body:
+  - type: input
+    id: cve
+    attributes:
+      label: CVE ID
+    validations:
+      required: true
+  - type: input
+    id: psa
+    attributes:
+      label: Proxmox security advisory (if any)
+  - type: input
+    id: commit
+    attributes:
+      label: Upstream fix commit
+  - type: textarea
+    id: why
+    attributes:
+      label: Why it matters for Proxmox VE hosts

@@ -1,0 +1,34 @@
+# pve-klp agent configuration. All keys are optional except `repository`.
+
+# Release repository (contains v1/). https://, file:// or an absolute path.
+# repository = "https://klp.example.org"
+
+# Release ring of this node: "canary", "early" or "stable".
+ring = "stable"
+
+# Trusted manifest signing keys (minisign public keys, *.pub).
+# trusted_keys_dir = "/etc/pve-klp/trusted.d"
+
+# Certificate the modules are signed with; needed for Secure Boot (MOK).
+# module_cert = "/etc/pve-klp/module-cert.der"
+
+# Seconds to wait for a livepatch transition before backing out.
+# Tasks that block get a fake signal every 15 s; keep this well above that.
+# transition_timeout = 120
+
+# Seconds to watch the kernel log and taint flags after the transition.
+# settle_time = 10
+
+# After a reboot into the same kernel, reload the previously active module
+# even if its manifest expired meanwhile (running without it is not safer).
+# allow_expired_on_boot = true
+
+# node_exporter textfile collector directory ("" disables).
+# textfile_dir = "/var/lib/prometheus/node-exporter"
+
+# Executables run after each successful transition; non-zero exit reverts.
+# hooks_dir = "/etc/pve-klp/hooks.d"
+
+# state_dir = "/var/lib/pve-klp"
+# http_timeout = 300
+# allow_http = false

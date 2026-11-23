@@ -1,0 +1,7 @@
+#!/bin/sh
+set -e
+if [ "$1" = "purge" ]; then
+	rm -rf /var/lib/pve-klp
+	rm -f /var/lib/prometheus/node-exporter/pve_klp.prom
+fi
+#DEBHELPER#
