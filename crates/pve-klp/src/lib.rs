@@ -14,6 +14,7 @@ pub mod linux;
 pub mod lock;
 pub mod repo;
 pub mod report;
+pub mod setup;
 pub mod state;
 
 pub use agent::Agent;

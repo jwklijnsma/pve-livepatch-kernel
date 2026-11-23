@@ -1,0 +1,74 @@
+name: release
+
+# Push a tag like v0.1.0 to build the Debian package and the static agent
+# binary and attach them, with checksums, to a GitHub release. Tags with a
+# suffix (v0.2.0-rc1) are marked pre-release; GitHub's "latest" link, which
+# the README's quick start uses, skips those.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    runs-on: ubuntu-24.04
+    container: debian:trixie
+    steps:
+      - uses: actions/checkout@v4
+      - run: apt-get update && apt-get install -y build-essential debhelper curl ca-certificates dpkg-dev
+      - name: version matches tag
+        run: |
+          v="$(dpkg-parsechangelog -S Version | sed 's/-[^-]*$//')"
+          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "debian/changelog has $v, tag is ${GITHUB_REF_NAME}"; exit 1; }
+      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
+      - run: . "$HOME/.cargo/env" && dpkg-buildpackage -us -uc -b -d
+      - run: mkdir -p dist && mv ../pve-klp_*.deb dist/
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deb
+          path: dist/*.deb
+
+  static:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: cargo build --release --locked -p pve-klp -p pve-klp-tool --target x86_64-unknown-linux-musl
+      - run: |
+          mkdir -p dist
+          cp target/x86_64-unknown-linux-musl/release/pve-klp dist/pve-klp-x86_64-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/pve-klp-tool dist/pve-klp-tool-x86_64-linux-musl
+      - uses: actions/upload-artifact@v4
+        with:
+          name: static
+          path: dist/*
+
+  publish:
+    needs: [deb, static]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: stable download name for releases/latest/download
+        run: cp dist/pve-klp_*_amd64.deb dist/pve-klp_amd64.deb
+      - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
+      - name: create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          flags=()
+          case "${GITHUB_REF_NAME}" in *-*) flags+=(--prerelease) ;; esac
+          gh release create "${GITHUB_REF_NAME}" dist/* --title "pve-klp ${GITHUB_REF_NAME#v}" \
+            --notes "See [CHANGELOG.md](https://github.com/${GITHUB_REPOSITORY}/blob/main/CHANGELOG.md). Verify downloads with \`sha256sum -c SHA256SUMS\`." \
+            "${flags[@]}"

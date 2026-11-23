@@ -26,6 +26,21 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
+    /// Configure repository, ring and trusted key, then run `check`.
+    Setup {
+        /// Release repository, e.g. https://klp.example.org or /srv/klp.
+        #[arg(long)]
+        repository: String,
+        /// Release ring of this node.
+        #[arg(long, default_value = "stable", value_parser = ["canary", "early", "stable"])]
+        ring: String,
+        /// Manifest signing key: a minisign public key file, or an https URL.
+        #[arg(long)]
+        key: Option<String>,
+        /// Name under which the key is stored in trusted.d.
+        #[arg(long, default_value = "repository")]
+        key_name: String,
+    },
     /// Check prerequisites: kernel config, Secure Boot / MOK, keys, repository.
     Check {
         #[arg(long)]
@@ -92,8 +107,12 @@ fn write_textfile(agent: &Agent<LinuxKernel>) {
 }
 
 fn run(cli: Cli) -> Result<i32> {
+    if let Cmd::Setup { repository, ring, key, key_name } = &cli.cmd {
+        return setup(&cli.config, repository, ring, key.as_deref(), key_name);
+    }
     let cfg = Config::load(&cli.config)?;
     match cli.cmd {
+        Cmd::Setup { .. } => unreachable!("handled above"),
         Cmd::Check { json } => {
             let agent = build_agent(cfg, true)?;
             let items = Checker { agent: &agent, root: "/".into() }.run();
@@ -182,6 +201,51 @@ fn run(cli: Cli) -> Result<i32> {
             Ok(if st.success() { 0 } else { 1 })
         }
     }
+}
+
+fn setup(config: &std::path::Path, repository: &str, ring: &str, key: Option<&str>, key_name: &str) -> Result<i32> {
+    use pve_klp::setup;
+    setup::write_config(config, repository, ring)?;
+    println!("wrote {} (repository {repository}, ring {ring})", config.display());
+    let cfg = Config::load(config)?;
+    if let Some(k) = key {
+        let text = if k.starts_with("https://") {
+            fetch_text(k)?
+        } else {
+            std::fs::read_to_string(k).with_context(|| format!("reading {k}"))?
+        };
+        let id = setup::install_key(&cfg.trusted_keys_dir, key_name, &text)?;
+        println!("installed manifest key {id} as {}/{key_name}.pub", cfg.trusted_keys_dir.display());
+        println!("  compare this key id with the one published by the repository owner");
+    }
+    println!();
+    let agent = build_agent(cfg, true)?;
+    let items = Checker { agent: &agent, root: "/".into() }.run();
+    let mut problems = 0;
+    for i in items.iter().filter(|i| i.level >= Level::Warn) {
+        problems += 1;
+        println!("{}  {:<18} {}", if i.level == Level::Fail { " FAIL" } else { " WARN" }, i.check, i.detail);
+    }
+    if problems == 0 {
+        println!("all checks passed.");
+    }
+    println!(
+        "\nnext steps:\n  pve-klp apply          load the livepatch for this kernel now\n  \
+         pve-klp status         see what is fixed and what still needs a reboot\n  \
+         pve-klp auto enable    apply new levels automatically (hourly)"
+    );
+    Ok(if items.iter().any(|i| i.level == Level::Fail) { 2 } else { 0 })
+}
+
+#[cfg(feature = "http")]
+fn fetch_text(url: &str) -> Result<String> {
+    let mut resp = ureq::get(url).call().with_context(|| format!("GET {url}"))?;
+    Ok(resp.body_mut().with_config().limit(64 << 10).read_to_string()?)
+}
+
+#[cfg(not(feature = "http"))]
+fn fetch_text(url: &str) -> Result<String> {
+    bail!("built without https support; download {url} and pass the file instead")
 }
 
 fn finish(res: Result<Outcome, pve_klp::agent::ApplyError>) -> Result<i32> {

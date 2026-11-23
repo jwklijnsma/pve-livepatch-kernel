@@ -8,6 +8,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `pve-klp setup`: configure repository, ring and trusted key in one step.
+- Release workflow: tagged versions publish the Debian package, static
+  binaries and SHA256SUMS on GitHub.
 - Node agent `pve-klp`: `check`, `status`, `apply`, `boot`, `revert`, `auto`,
   `mok`. Signature, kernel release, vmlinux build-id and module hash are
   verified before loading. Stalled transitions are reversed, never forced.
