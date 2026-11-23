@@ -98,8 +98,13 @@ enum Cmd {
         symvers: PathBuf,
         #[arg(long)]
         modules_dir: Option<PathBuf>,
+        /// Patched functions from `objtool klp diff` (object:function per line).
         #[arg(long)]
         functions: Option<PathBuf>,
+        /// Resolved catalog; requires the patched functions to equal the
+        /// reviewed `functions` of its entries.
+        #[arg(long)]
+        resolved: Option<PathBuf>,
         #[arg(long)]
         json: bool,
     },
@@ -118,7 +123,7 @@ enum Cmd {
         build_id: Option<String>,
         /// Patched functions from `objtool klp diff` (object:function per line).
         #[arg(long)]
-        functions: Option<PathBuf>,
+        functions: PathBuf,
         #[arg(long, default_value_t = 30)]
         valid_days: i64,
         #[arg(long)]
@@ -267,7 +272,7 @@ fn run(cli: Cli) -> Result<bool> {
             }
             Ok(true)
         }
-        Cmd::GateA { module, kernel, expected_name, system_map, symvers, modules_dir, functions, json } => {
+        Cmd::GateA { module, kernel, expected_name, system_map, symvers, modules_dir, functions, resolved, json } => {
             let r = gate::run(&gate::Inputs {
                 module: &module,
                 kernel_release: &kernel,
@@ -276,6 +281,7 @@ fn run(cli: Cli) -> Result<bool> {
                 symvers: &symvers,
                 modules_dir: modules_dir.as_deref(),
                 functions: functions.as_deref(),
+                resolved: resolved.as_deref(),
             })?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);
@@ -287,11 +293,12 @@ fn run(cli: Cli) -> Result<bool> {
                     println!("warning {w}");
                 }
                 println!(
-                    "gate A {}: {} modversions, {} klp symbols, {} functions checked",
+                    "gate A {}: {} modversions, {} klp symbols, {} functions checked{}",
                     if r.ok { "passed" } else { "FAILED" },
                     r.checked_versions,
                     r.checked_klp_symbols,
-                    r.checked_functions
+                    r.checked_functions,
+                    if r.compared_with_catalog { ", equal to the reviewed catalog" } else { "" }
                 );
             }
             Ok(r.ok)
@@ -325,27 +332,12 @@ fn run(cli: Cli) -> Result<bool> {
                     naming::module_name(&r.kernel, level)
                 );
             }
-            let mut fixes = r.fixes.clone();
-            if let Some(f) = functions {
-                let diff: Vec<String> = String::from_utf8(read(&f)?)?
-                    .lines()
-                    .map(str::trim)
-                    .filter(|l| !l.is_empty() && !l.starts_with('#'))
-                    .map(str::to_owned)
-                    .collect();
-                let strip = |s: &str| s.split(',').next().unwrap_or(s).to_owned();
-                for fx in &fixes {
-                    for fun in &fx.functions {
-                        if !diff.iter().any(|d| strip(d) == strip(fun)) {
-                            bail!("{}: reviewed function {fun} is not in the objtool diff", fx.id);
-                        }
-                    }
-                }
-                // A single fix owns the whole diff; with several fixes the
-                // reviewed per-entry lists are authoritative.
-                if fixes.len() == 1 && fixes[0].functions.is_empty() {
-                    fixes[0].functions = diff;
-                }
+            let fixes = r.fixes.clone();
+            let diff = gate::read_function_list(&functions)?;
+            let reviewed: Vec<String> = fixes.iter().flat_map(|f| f.functions.iter().cloned()).collect();
+            let errs = gate::compare_function_sets(&diff, &reviewed);
+            if !errs.is_empty() {
+                bail!("module and catalog disagree:\n  {}", errs.join("\n  "));
             }
             let built = Utc::now();
             let m = Manifest {

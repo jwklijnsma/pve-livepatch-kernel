@@ -93,10 +93,24 @@ fn main() -> ExitCode {
     }
 }
 
+/// Root of /proc, /sys and /boot. Read-only commands (status, check)
+/// honour `PVE_KLP_SYSROOT` so they can be tested against a prepared tree;
+/// commands that load or unload modules always use the real system.
+fn sysroot(read_only: bool) -> std::path::PathBuf {
+    match std::env::var_os("PVE_KLP_SYSROOT") {
+        Some(r) if read_only && !r.is_empty() => r.into(),
+        _ => "/".into(),
+    }
+}
+
 fn build_agent(cfg: Config, quiet: bool) -> Result<Agent<LinuxKernel>> {
+    build_agent_at(cfg, quiet, sysroot(false))
+}
+
+fn build_agent_at(cfg: Config, quiet: bool, root: std::path::PathBuf) -> Result<Agent<LinuxKernel>> {
     let trust = TrustStore::load_dir(&cfg.trusted_keys_dir)?;
     let repo = if cfg.repository.trim().is_empty() { None } else { Some(repo::open(&cfg)?) };
-    let mut agent = Agent::new(cfg, LinuxKernel::default(), repo, trust);
+    let mut agent = Agent::new(cfg, LinuxKernel::with_root(root), repo, trust);
     agent.echo = !quiet;
     Ok(agent)
 }
@@ -122,8 +136,8 @@ fn run(cli: Cli) -> Result<i32> {
     match cli.cmd {
         Cmd::Setup { .. } | Cmd::Completions { .. } => unreachable!("handled above"),
         Cmd::Check { json } => {
-            let agent = build_agent(cfg, true)?;
-            let items = Checker { agent: &agent, root: "/".into() }.run();
+            let agent = build_agent_at(cfg, true, sysroot(true))?;
+            let items = Checker { agent: &agent, root: sysroot(true) }.run();
             if json {
                 println!("{}", serde_json::to_string_pretty(&items)?);
             } else {
@@ -144,7 +158,7 @@ fn run(cli: Cli) -> Result<i32> {
             })
         }
         Cmd::Status { json } => {
-            let agent = build_agent(cfg, true)?;
+            let agent = build_agent_at(cfg, true, sysroot(true))?;
             let r = report::collect(&agent)?;
             if json {
                 println!("{}", serde_json::to_string_pretty(&r)?);

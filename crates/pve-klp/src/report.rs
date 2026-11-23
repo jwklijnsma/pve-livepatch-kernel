@@ -18,6 +18,7 @@ pub mod exit {
     pub const REBOOT_REQUIRED: i32 = 10;
     pub const NOT_ACTIVE: i32 = 11;
     pub const EXPIRED: i32 = 12;
+    /// Last operation failed, or an operation/transition is in progress.
     pub const FAILED: i32 = 20;
 }
 
@@ -132,8 +133,12 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
 }
 
 impl StatusReport {
+    /// The same code for text and `--json` output.
     pub fn exit_code(&self) -> i32 {
-        if self.phase == Phase::Failed || self.active.as_ref().is_some_and(|a| a.transition) {
+        // fetched/verified/loading: an operation (e.g. the boot reload) is
+        // still running, so nothing is settled yet.
+        let in_progress = matches!(self.phase, Phase::Fetched | Phase::Verified | Phase::Loading);
+        if self.phase == Phase::Failed || in_progress || self.active.as_ref().is_some_and(|a| a.transition) {
             exit::FAILED
         } else if self.manifest.as_ref().is_some_and(|m| m.expired) {
             exit::EXPIRED
@@ -268,5 +273,79 @@ impl StatusReport {
             return Ok(());
         }
         crate::state::write_atomic(&dir.join("pve_klp.prom"), self.to_prometheus().as_bytes())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report() -> StatusReport {
+        StatusReport {
+            kernel: "7.3.5-1-pve".into(),
+            kernel_build_id: None,
+            ring: "stable".into(),
+            phase: Phase::Active,
+            held: false,
+            highest_accepted: 1,
+            active: Some(ActiveInfo {
+                module: "klp_pve_7_3_5_1_p1".into(),
+                level: Some(1),
+                transition: false,
+                functions: vec![],
+            }),
+            foreign_patches: vec![],
+            manifest: Some(ManifestInfo {
+                level: 1,
+                ring: "stable".into(),
+                signed_by: "project".into(),
+                built: "2026-11-23T09:00:00Z".parse().unwrap(),
+                expires: "2026-12-23T09:00:00Z".parse().unwrap(),
+                age_days: 1,
+                expired: false,
+                superseded_by_kernel: None,
+            }),
+            covered: vec![],
+            not_covered: vec![],
+            reboot_required: false,
+            reboot_reasons: vec![],
+            last_error: None,
+        }
+    }
+
+    #[test]
+    fn exit_codes_for_every_state() {
+        assert_eq!(report().exit_code(), exit::OK);
+
+        let mut r = report();
+        r.reboot_required = true;
+        assert_eq!(r.exit_code(), exit::REBOOT_REQUIRED);
+
+        let mut r = report();
+        r.active = None;
+        r.phase = Phase::None;
+        assert_eq!(r.exit_code(), exit::NOT_ACTIVE);
+        r.phase = Phase::Reverted;
+        assert_eq!(r.exit_code(), exit::NOT_ACTIVE);
+
+        let mut r = report();
+        r.manifest.as_mut().unwrap().expired = true;
+        assert_eq!(r.exit_code(), exit::EXPIRED);
+
+        let mut r = report();
+        r.phase = Phase::Failed;
+        assert_eq!(r.exit_code(), exit::FAILED);
+
+        let mut r = report();
+        r.active.as_mut().unwrap().transition = true;
+        assert_eq!(r.exit_code(), exit::FAILED);
+
+        // Boot reload still running: not "ok".
+        for phase in [Phase::Fetched, Phase::Verified, Phase::Loading] {
+            let mut r = report();
+            r.active = None;
+            r.phase = phase;
+            assert_eq!(r.exit_code(), exit::FAILED, "{phase:?}");
+        }
     }
 }

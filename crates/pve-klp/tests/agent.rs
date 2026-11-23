@@ -435,6 +435,38 @@ fn new_taint_triggers_back_out() {
 }
 
 #[test]
+fn host_without_zfs_accepts_the_modules_own_oot_taint() {
+    // No ZFS/spl loaded: the kernel is untainted until the livepatch module
+    // itself sets O, K (and E). That must not count as a new problem.
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().tainted = 0;
+    let a = env.agent(k);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 1, .. }));
+    // Same after a reboot into the same kernel.
+    let k = kernel();
+    k.st.borrow_mut().tainted = 0;
+    let b = env.agent(k);
+    assert!(matches!(b.boot().unwrap(), Outcome::Applied { level: 1, .. }));
+}
+
+#[test]
+fn unexplained_taint_still_fails_on_untainted_host() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    {
+        let mut st = k.st.borrow_mut();
+        st.tainted = 0;
+        st.taint_on_load = pve_klp::kernel::taint::WARN;
+    }
+    let a = env.agent(k);
+    let e = a.apply(&explicit()).unwrap_err();
+    assert!(e.to_string().contains("taint flags W") && !e.to_string().contains('O'), "{e}");
+}
+
+#[test]
 fn missing_function_triggers_back_out() {
     let env = Env::new();
     env.publish_level(1);

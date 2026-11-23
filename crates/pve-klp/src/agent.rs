@@ -472,7 +472,19 @@ impl<K: KernelOps> Agent<K> {
                 return Err(format!("kernel log since loading:\n  {}", bad.join("\n  ")));
             }
         }
-        let new_taint = self.kernel.tainted().map_err(|e| e.to_string())? & !taint_before & !taint::EXPECTED;
+        // Flags the livepatch module itself reports (/sys/module/<m>/taint,
+        // typically "OK" or "OEK") are explained by loading it. Anything
+        // else that appeared since (W, D, L, ...) is not.
+        let own = self
+            .kernel
+            .modules()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|md| md.name == m.module_name)
+            .map(|md| taint::from_letters(&md.taint) & taint::MODULE_ATTRIBUTABLE)
+            .unwrap_or(0);
+        let explained = taint::EXPECTED | own;
+        let new_taint = self.kernel.tainted().map_err(|e| e.to_string())? & !taint_before & !explained;
         if new_taint != 0 {
             return Err(format!("kernel gained taint flags {}", taint::letters(new_taint)));
         }

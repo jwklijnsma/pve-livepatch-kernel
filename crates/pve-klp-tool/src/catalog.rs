@@ -73,8 +73,14 @@ pub fn load(catalog: &Path) -> Result<Vec<Loaded>> {
     dirs.sort();
     for dir in dirs {
         let text = std::fs::read_to_string(dir.join("meta.yaml"))?;
-        let entry: Entry =
+        let mut entry: Entry =
             serde_norway::from_str(&text).with_context(|| format!("parsing {}/meta.yaml", dir.display()))?;
+        // Optional fields: an empty value means the same as omitting the key.
+        for f in [&mut entry.psa, &mut entry.fixed_in_pve, &mut entry.mitigation] {
+            if f.as_deref().is_some_and(|v| v.trim().is_empty()) {
+                *f = None;
+            }
+        }
         let dir_name = dir.file_name().unwrap_or_default().to_string_lossy();
         if entry.id != dir_name {
             bail!("{}: id {:?} does not match directory name", dir.display(), entry.id);
@@ -113,6 +119,9 @@ pub fn lint(l: &Loaded) -> Vec<String> {
         Class::Livepatchable => {
             if !e.patches.contains_key("default") {
                 p.push("class livepatchable needs patches.default".into());
+            }
+            if e.functions.is_empty() {
+                p.push("class livepatchable needs the reviewed list of patched functions (`functions`)".into());
             }
             if e.reviewed_by.len() < 2 {
                 p.push(format!("class livepatchable needs two reviewers, has {}", e.reviewed_by.len()));
@@ -352,6 +361,7 @@ severity: high
 class: livepatchable
 patches:
   default: 0001-fix.patch
+functions: ["vmlinux:old_bug"]
 reviewed_by: ["alice", "bob"]
 "#,
         );
@@ -383,6 +393,8 @@ reviewed_by: ["alice", "bob"]
             r#"
 id: CVE-2026-0009
 title: x
+psa: ""
+mitigation: ""
 upstream_commits: ["xyz"]
 severity: low
 class: not-livepatchable
@@ -398,6 +410,8 @@ class: not-livepatchable
         let msg = check_patch_id(&evil, t.path()).unwrap().unwrap();
         assert!(msg.contains("not a hex sha"), "{msg}");
         assert!(p.iter().any(|m| m.contains("reason")));
+        assert!(!p.iter().any(|m| m.contains("psa")), "empty psa means none: {p:?}");
+        assert!(e[0].entry.psa.is_none() && e[0].entry.mitigation.is_none());
     }
 
     #[test]

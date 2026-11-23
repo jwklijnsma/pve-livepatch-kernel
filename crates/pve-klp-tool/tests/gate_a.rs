@@ -109,3 +109,50 @@ fn keygen_sign_verify_roundtrip() {
     std::fs::write(&f, b"{ }").unwrap();
     assert!(!Command::new(bin).args(["verify", "--pubkey"]).arg(&pk).arg(&f).status().unwrap().success());
 }
+
+#[test]
+fn gate_a_requires_module_to_patch_exactly_the_reviewed_functions() {
+    let t = tempfile::tempdir().unwrap();
+    let d = t.path();
+    std::fs::write(d.join("System.map"), "ffffffff81001000 t cmdline_proc_show\nffffffff81002000 T tcp_v4_rcv\n")
+        .unwrap();
+    std::fs::write(d.join("Module.symvers"), "0x12345678\tklp_enable_patch\tvmlinux\tEXPORT_SYMBOL_GPL\t\n").unwrap();
+    std::fs::write(d.join("m.ko"), module("7.3.5-1-pve SMP", &[("klp_enable_patch", 0x12345678)], &[])).unwrap();
+    // What objtool klp diff reported for the module.
+    std::fs::write(d.join("functions.txt"), "vmlinux:cmdline_proc_show\n").unwrap();
+
+    let run = |reviewed: &str| {
+        std::fs::write(
+            d.join("resolved.json"),
+            format!(
+                r#"{{"kernel":"7.3.5-1-pve","patches":[],"fixes":[{{"id":"CVE-2026-0001","functions":[{reviewed}]}}],"not_covered":[],"skipped":[]}}"#
+            ),
+        )
+        .unwrap();
+        let out = Command::new(env!("CARGO_BIN_EXE_pve-klp-tool"))
+            .args(["gate-a", "--kernel", "7.3.5-1-pve"])
+            .arg("--module")
+            .arg(d.join("m.ko"))
+            .arg("--system-map")
+            .arg(d.join("System.map"))
+            .arg("--symvers")
+            .arg(d.join("Module.symvers"))
+            .arg("--functions")
+            .arg(d.join("functions.txt"))
+            .arg("--resolved")
+            .arg(d.join("resolved.json"))
+            .output()
+            .unwrap();
+        (out.status.success(), String::from_utf8_lossy(&out.stdout).into_owned())
+    };
+
+    let (ok, out) = run(r#""vmlinux:cmdline_proc_show""#);
+    assert!(ok && out.contains("equal to the reviewed catalog"), "{out}");
+
+    // The reviewed list names a function that exists in the kernel but is
+    // not what the module patches: this used to pass.
+    let (ok, out) = run(r#""vmlinux:tcp_v4_rcv""#);
+    assert!(!ok, "{out}");
+    assert!(out.contains("cmdline_proc_show is patched by the module but not listed"), "{out}");
+    assert!(out.contains("tcp_v4_rcv is listed in the reviewed catalog entries but not patched"), "{out}");
+}

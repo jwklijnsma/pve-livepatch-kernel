@@ -1,3 +1,11 @@
+pve-klp (0.1.1-1) trixie; urgency=medium
+
+  * Agent: accept the out-of-tree taint the livepatch module sets itself.
+  * Agent: status exits 20 while a load is still in progress.
+  * Builder: reproducible image, QEMU stage, function-set check in Gate A.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Mon, 23 Nov 2026 14:09:19 +0000
+
 pve-klp (0.1.0-1) trixie; urgency=medium
 
   * Initial release: node agent with check, status, apply, boot, revert.

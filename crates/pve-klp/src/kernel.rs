@@ -105,33 +105,46 @@ pub mod taint {
     pub const SOFTLOCKUP: u64 = 1 << 14;
     pub const LIVEPATCH: u64 = 1 << 15;
 
-    /// Taints a livepatch load is expected to add.
+    /// Taints a livepatch load always adds, even if the module's own
+    /// taint cannot be read.
     pub const EXPECTED: u64 = LIVEPATCH | UNSIGNED_MODULE;
 
+    const LETTERS: &[(u64, char)] = &[
+        (1 << 0, 'P'),
+        (1 << 1, 'F'),
+        (1 << 2, 'S'),
+        (1 << 3, 'R'),
+        (1 << 4, 'M'),
+        (1 << 5, 'B'),
+        (1 << 6, 'U'),
+        (1 << 7, 'D'),
+        (1 << 8, 'A'),
+        (1 << 9, 'W'),
+        (1 << 10, 'C'),
+        (1 << 11, 'I'),
+        (1 << 12, 'O'),
+        (1 << 13, 'E'),
+        (1 << 14, 'L'),
+        (1 << 15, 'K'),
+        (1 << 16, 'X'),
+        (1 << 17, 'T'),
+        (1 << 18, 'N'),
+    ];
+
     pub fn letters(bits: u64) -> String {
-        const L: &[(u64, char)] = &[
-            (1 << 0, 'P'),
-            (1 << 1, 'F'),
-            (1 << 2, 'S'),
-            (1 << 3, 'R'),
-            (1 << 4, 'M'),
-            (1 << 5, 'B'),
-            (1 << 6, 'U'),
-            (1 << 7, 'D'),
-            (1 << 8, 'A'),
-            (1 << 9, 'W'),
-            (1 << 10, 'C'),
-            (1 << 11, 'I'),
-            (1 << 12, 'O'),
-            (1 << 13, 'E'),
-            (1 << 14, 'L'),
-            (1 << 15, 'K'),
-            (1 << 16, 'X'),
-            (1 << 17, 'T'),
-            (1 << 18, 'N'),
-        ];
-        L.iter().filter(|(b, _)| bits & b != 0).map(|(_, c)| *c).collect()
+        LETTERS.iter().filter(|(b, _)| bits & b != 0).map(|(_, c)| *c).collect()
     }
+
+    /// Bits for a taint string like `/sys/module/<m>/taint` ("OEK").
+    pub fn from_letters(s: &str) -> u64 {
+        s.chars().filter_map(|c| LETTERS.iter().find(|(_, l)| *l == c).map(|(b, _)| *b)).fold(0, |a, b| a | b)
+    }
+
+    /// Module-level taints a livepatch module may legitimately carry:
+    /// klp-build output is always an out-of-tree module (O), is a
+    /// livepatch (K) and is unsigned for the kernel unless its certificate
+    /// is trusted (E).
+    pub const MODULE_ATTRIBUTABLE: u64 = OOT_MODULE | UNSIGNED_MODULE | LIVEPATCH;
 }
 
 /// Kernel log lines that make a freshly loaded patch suspicious.
@@ -159,6 +172,8 @@ mod tests {
     #[test]
     fn taint_letters() {
         assert_eq!(taint::letters(taint::LIVEPATCH | taint::OOT_MODULE | taint::PROPRIETARY_MODULE), "POK");
+        assert_eq!(taint::from_letters("OEK"), taint::OOT_MODULE | taint::UNSIGNED_MODULE | taint::LIVEPATCH);
+        assert_eq!(taint::from_letters(""), 0);
     }
 
     #[test]

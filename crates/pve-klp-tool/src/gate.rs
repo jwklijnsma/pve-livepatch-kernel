@@ -26,6 +26,8 @@ pub struct Report {
     pub checked_versions: usize,
     pub checked_klp_symbols: usize,
     pub checked_functions: usize,
+    /// Patched functions were compared with the reviewed catalog lists.
+    pub compared_with_catalog: bool,
     pub errors: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -38,8 +40,50 @@ pub struct Inputs<'a> {
     pub symvers: &'a Path,
     /// `/lib/modules/<kver>` of the extracted shipped package.
     pub modules_dir: Option<&'a Path>,
-    /// One `object:function[,sympos]` per line.
+    /// One `object:function[,sympos]` per line, from `objtool klp diff`.
     pub functions: Option<&'a Path>,
+    /// Resolved catalog: the union of its reviewed `functions` must equal
+    /// the function list above exactly.
+    pub resolved: Option<&'a Path>,
+}
+
+/// Read a function list: one `object:function[,sympos]` per line.
+pub fn read_function_list(path: &Path) -> Result<Vec<String>> {
+    let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
+    Ok(text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).map(str::to_owned).collect())
+}
+
+/// `object:function` without the sympos suffix.
+fn normalize(f: &str) -> String {
+    f.split(',').next().unwrap_or(f).trim().to_owned()
+}
+
+/// Compare what the module patches (objtool diff) with what reviewers
+/// signed off (catalog). Both directions matter: an extra function in the
+/// diff was never reviewed, a missing one means the reviewed fix is not
+/// (fully) in the module. Returns one error line per difference.
+pub fn compare_function_sets(diff: &[String], reviewed: &[String]) -> Vec<String> {
+    use std::collections::BTreeSet;
+    let d: BTreeSet<String> = diff.iter().map(|f| normalize(f)).collect();
+    let r: BTreeSet<String> = reviewed.iter().map(|f| normalize(f)).collect();
+    let mut errs = Vec::new();
+    if d.is_empty() {
+        errs.push("the objtool diff lists no changed functions".to_owned());
+    }
+    for f in d.difference(&r) {
+        errs.push(format!("function {f} is patched by the module but not listed in the reviewed catalog entries"));
+    }
+    for f in r.difference(&d) {
+        errs.push(format!("function {f} is listed in the reviewed catalog entries but not patched by the module"));
+    }
+    if !errs.is_empty() {
+        errs.push(format!(
+            "module patches: [{}]; catalog lists: [{}]",
+            d.into_iter().collect::<Vec<_>>().join(", "),
+            r.into_iter().collect::<Vec<_>>().join(", ")
+        ));
+    }
+    errs
 }
 
 /// Lazily loaded symbol tables of the shipped kernel and its modules.
@@ -157,8 +201,8 @@ pub fn run(i: &Inputs) -> Result<Report> {
 
     // 4. patched functions
     if let Some(f) = i.functions {
-        let text = std::fs::read_to_string(f).with_context(|| format!("reading {}", f.display()))?;
-        for line in text.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        let list = read_function_list(f)?;
+        for line in &list {
             let Some((obj, rest)) = line.split_once(':') else {
                 r.errors.push(format!("functions: malformed line {line:?}, want object:function[,sympos]"));
                 continue;
@@ -170,6 +214,17 @@ pub fn run(i: &Inputs) -> Result<Report> {
             check_symbol(&mut sh, obj, name, pos, "patched function", &mut r)?;
             r.checked_functions += 1;
         }
+        // 5. the module patches exactly what was reviewed
+        if let Some(res) = i.resolved {
+            let resolved: crate::catalog::Resolved =
+                serde_json::from_slice(&std::fs::read(res).with_context(|| format!("reading {}", res.display()))?)
+                    .context("parsing resolved catalog")?;
+            let reviewed: Vec<String> = resolved.fixes.iter().flat_map(|f| f.functions.iter().cloned()).collect();
+            r.errors.extend(compare_function_sets(&list, &reviewed));
+            r.compared_with_catalog = true;
+        }
+    } else if i.resolved.is_some() {
+        r.errors.push("--resolved needs --functions: cannot compare the module with the catalog".into());
     } else {
         r.warnings.push("no function list given; patched functions not checked".into());
     }
@@ -179,4 +234,24 @@ pub fn run(i: &Inputs) -> Result<Report> {
     }
     r.ok = r.errors.is_empty();
     Ok(r)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn v(x: &[&str]) -> Vec<String> {
+        x.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn function_sets_must_match_exactly() {
+        assert!(
+            compare_function_sets(&v(&["vmlinux:cmdline_proc_show"]), &v(&["vmlinux:cmdline_proc_show,1"])).is_empty()
+        );
+        let e = compare_function_sets(&v(&["vmlinux:cmdline_proc_show"]), &v(&["vmlinux:tcp_v4_rcv"]));
+        assert!(e.iter().any(|l| l.contains("cmdline_proc_show is patched by the module but not listed")));
+        assert!(e.iter().any(|l| l.contains("tcp_v4_rcv is listed") && l.contains("not patched")));
+        assert!(compare_function_sets(&v(&[]), &v(&[])).iter().any(|l| l.contains("no changed functions")));
+    }
 }

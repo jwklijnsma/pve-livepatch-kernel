@@ -208,8 +208,9 @@ impl KernelOps for FakeKernel {
             return Err(LoadError::AlreadyLoaded);
         }
         let polls = st.transition_polls;
-        st.modules.push(ModuleInfo { name: name.clone(), taint: if signed { "K" } else { "KE" }.into(), refcnt: 1 });
-        st.tainted |= taint::LIVEPATCH | if signed { 0 } else { taint::UNSIGNED_MODULE };
+        // klp-build output is an out-of-tree module, like the real thing.
+        st.modules.push(ModuleInfo { name: name.clone(), taint: if signed { "OK" } else { "OEK" }.into(), refcnt: 1 });
+        st.tainted |= taint::LIVEPATCH | taint::OOT_MODULE | if signed { 0 } else { taint::UNSIGNED_MODULE };
         st.tainted |= st.taint_on_load;
         let functions = st.functions_on_load.clone();
         st.patches.push(FakePatch { name, enabled: true, transition: true, polls_left: polls, functions });

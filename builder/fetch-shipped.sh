@@ -9,9 +9,9 @@ KVER=${1:?kver}; OUT=${2:?outdir}
 require apt-get dpkg-deb readelf
 mkdir -p "$OUT/debs" "$OUT/root"
 
-# The Proxmox repository must be configured in the container (pve-test or
-# pve-no-subscription for opt-in kernels), with its signing key.
-# M0: confirm the exact package names for the 7.3 series.
+# The builder image configures the Proxmox repository (pve-no-subscription;
+# opt-in kernels are also in pve-test) with a low pin priority.
+apt-get update -qq
 ( cd "$OUT/debs" && apt-get download "proxmox-kernel-${KVER}-signed" "proxmox-headers-${KVER}" ) \
   || ( cd "$OUT/debs" && apt-get download "proxmox-kernel-${KVER}" "proxmox-headers-${KVER}" )
 for d in "$OUT"/debs/*.deb; do dpkg-deb -x "$d" "$OUT/root"; done
@@ -20,12 +20,17 @@ R="$OUT/root"
 cp "$R/boot/config-$KVER"       "$OUT/config"
 cp "$R/boot/System.map-$KVER"   "$OUT/System.map"
 cp "$R/usr/src/linux-headers-$KVER/Module.symvers" "$OUT/Module.symvers"
-ln -sfn "$R/lib/modules/$KVER" "$OUT/modules"
+if [ -d "$R/usr/lib/modules/$KVER" ]; then
+  ln -sfn "$R/usr/lib/modules/$KVER" "$OUT/modules"
+else
+  ln -sfn "$R/lib/modules/$KVER" "$OUT/modules"
+fi
+cp "$R/boot/vmlinuz-$KVER" "$OUT/vmlinuz"
 
 # vmlinux build-id: the x86 bzImage payload is a stripped ELF that keeps
 # .notes. Cross-checked against /sys/kernel/notes in the QEMU stage.
-if [ -x "${TREE:-}/scripts/extract-vmlinux" ]; then
-  "$TREE/scripts/extract-vmlinux" "$R/boot/vmlinuz-$KVER" > "$OUT/vmlinux.shipped"
-  readelf -n "$OUT/vmlinux.shipped" | awk '/Build ID/ {print $3}' > "$OUT/build-id"
-fi
+[ -x "${TREE:-}/scripts/extract-vmlinux" ] || die "TREE must point to the kernel source (scripts/extract-vmlinux)"
+"$TREE/scripts/extract-vmlinux" "$R/boot/vmlinuz-$KVER" > "$OUT/vmlinux.shipped"
+readelf -n "$OUT/vmlinux.shipped" | awk '/Build ID/ {print $3}' > "$OUT/build-id"
+[ -s "$OUT/build-id" ] || die "could not read the vmlinux build-id from the shipped vmlinuz"
 log "shipped artifacts for $KVER in $OUT"

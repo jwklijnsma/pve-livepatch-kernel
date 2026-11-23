@@ -7,3 +7,5 @@
 /debian/*.substvars
 /debian/debhelper-build-stamp
 /build/
+/builder/pve-klp-tool
+/keys/

@@ -14,7 +14,7 @@ catalog/CVE-2026-XXXXX/0001-fix-7.3.5-1.patch   # optional backport
 ```yaml
 id: CVE-2026-XXXXX                 # must equal the directory name
 title: Use-after-free in ...
-psa: PSA-2026-000NN-1              # Proxmox security advisory, if any
+psa: PSA-2026-000NN-1              # Proxmox security advisory; omit or "" if none
 upstream_commits: ["<sha>"]        # authoritative form of the fix
 fixed_in_pve: "7.3.6-1"            # first Proxmox package that contains it
 severity: high                     # low | medium | high | critical
@@ -23,7 +23,7 @@ reason: ""                         # required unless livepatchable
 patches:
   default: 0001-fix.patch
   "7.3.5-1": 0001-fix-7.3.5-1.patch
-functions: ["vmlinux:tcp_foo"]     # reviewed list of patched functions
+functions: ["vmlinux:tcp_foo"]     # required for livepatchable: see below
 mitigation: ""                     # for mitigation-only
 tests:
   qemu_load: required
@@ -39,6 +39,15 @@ reviewed_by: ["alice", "bob"]
 | `needs-manual` | Needs shadow variables or callbacks | Not in v1: "reboot required" |
 | `not-livepatchable` | Data structure change, `__init`, `lib/`, assembler, vDSO, out-of-tree module (ZFS), notrace | "reboot required" |
 | `mitigation-only` | No patch, documented mitigation | Shown in status, never applied automatically |
+
+## Patched functions
+
+`functions` lists every function the fix changes, as `object:function`
+(`vmlinux:cmdline_proc_show`, `kvm_amd:svm_vcpu_run`). Reviewers sign off
+this list. Gate A compares it with what `objtool klp diff` reports for the
+built module: the union over all resolved entries must equal the module's
+changed functions exactly. A function the module patches without review, or
+a reviewed function the module does not patch, stops the build.
 
 ## Review rules
 

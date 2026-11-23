@@ -42,14 +42,20 @@ series):
      the shipped `System.map` or the shipped module, and its position
      resolves (unique when 0);
    - every patched function from `objtool klp diff` exists under exactly
-     that name.
+     that name;
+   - the changed functions equal the union of the reviewed `functions` of
+     the resolved catalog entries, in both directions.
 7. **Sign module** with `scripts/sign-file`.
 8. **Manifest** (`pve-klp-tool manifest`), unsigned until the QEMU stage
    passed.
-9. **QEMU stage**: boot the unmodified shipped kernel package, load, wait
-   for the transition, unload, load again, replace the previous level. Read
-   `/sys/kernel/notes` there and compare it with the build-id in the manifest.
-10. **Sign manifest and publish** to ring `canary` (`sign-manifest.sh`).
+9. **QEMU stage** (`qemu-test.sh`): boot the unmodified shipped kernel,
+   load, wait for the transition, compare the functions in sysfs with the
+   diff, replace the previous level, disable, unload, load again, check the
+   kernel log. Read `/sys/kernel/notes` there and compare it with the
+   build-id in the manifest. On success it writes `out/qemu.ok` with the
+   module's SHA-256.
+10. **Sign manifest and publish** to ring `canary` (`sign-manifest.sh`). It
+    refuses without a `qemu.ok` for exactly this module.
     Promotion to `early` and `stable` re-issues a signed manifest with the
     new ring (`pve-klp-tool promote`).
 
@@ -98,6 +104,10 @@ itself.
   validly signed.
 - **Rollback means a new level.** If level N is bad, maintainers publish N+1
   with the content of N−1. Locally, `revert` disables the patch and holds.
+- **Taint:** after loading, new taint flags fail the post-checks, except
+  those the livepatch module itself carries (`/sys/module/<m>/taint`:
+  `O`, `E`, `K`). On a host without ZFS, the module's own `O` is the first
+  out-of-tree taint and is expected.
 - **Expiry:** an expired manifest is never applied fresh. After a reboot into
   the same kernel, the previously active module is reloaded even if its
   manifest expired meanwhile (`allow_expired_on_boot`), because running

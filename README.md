@@ -6,7 +6,7 @@ your next maintenance window instead of tonight.
 
 [![CI](https://github.com/prepaid-host/pve-klp/actions/workflows/ci.yml/badge.svg)](https://github.com/prepaid-host/pve-klp/actions/workflows/ci.yml)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
-![Status: pre-release](https://img.shields.io/badge/status-pre--release-orange.svg)
+![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Proxmox VE 9](https://img.shields.io/badge/Proxmox%20VE-9-E57000.svg)
 [![Release](https://img.shields.io/github/v/release/prepaid-host/pve-klp?include_prereleases&sort=semver)](https://github.com/prepaid-host/pve-klp/releases)
 
@@ -23,10 +23,12 @@ reboot:        REQUIRED
                - not fixable by livepatch: CVE-2026-ZZZZZ
 ```
 
-> **Pre-release.** The agent and the build tooling are implemented and
-> tested against an emulated kernel. Building and loading a module on a real
-> Proxmox 7.3 kernel is the current milestone, and no modules are published
-> yet. Feedback and testers on non-production hosts are very welcome.
+> **Early release.** The full chain (build from the Proxmox source, Gate A,
+> signing, `setup`, `apply`, `revert`, reload after reboot) has run on a real
+> `7.3.5-1-pve` kernel in a nested PVE 9.2 VM, with a transition time of about
+> 1.6 s. No project builds of livepatch modules are published yet: build your
+> own with [docs/self-hosting.md](docs/self-hosting.md). Feedback and testers
+> on non-production hosts are very welcome.
 
 ## Why
 
@@ -155,7 +157,10 @@ nothing old is loaded.
 | 4 | precondition failed (transition running, forced leftover, foreign patch) |
 
 Metrics: `/var/lib/prometheus/node-exporter/pve_klp.prom`
-(`pve_klp_active_level`, `pve_klp_reboot_required`, `pve_klp_failed`, ...).
+(`pve_klp_active_level`, `pve_klp_reboot_required`, `pve_klp_failed`, ...),
+written whenever that directory exists (it does once the node_exporter
+textfile collector is set up). Set `textfile_dir` to change or `""` to turn
+it off.
 </details>
 
 ## Limits
@@ -174,9 +179,9 @@ are out of scope.
 
 | | Milestone | State |
 | --- | --- | --- |
-| 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | in progress |
+| 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | done (nested PVE 9.2, 7.3.5-1-pve) |
 | 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | planned |
-| 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | tooling done, CI integration planned |
+| 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | `builder/run.sh` per kernel done; scheduled CI planned |
 | 3 | Agent 0.1: check, status, apply, revert, boot unit, .deb, Ansible role | released in v0.1.0, Ansible role planned |
 | 4 | Nested-PVE tests under load, canary on AMD and Intel hardware, 24 h soak | planned |
 | 5 | Public project builds, status page, APT repository | planned |
@@ -203,6 +208,13 @@ builds, also the maintainers. See [SECURITY.md](SECURITY.md).
 Yes. Fixes inside the ZFS module itself are not livepatchable and are shown
 as "reboot required".
 
+**Why does the kernel show taint `E` after loading?**
+Without Secure Boot, the kernel cannot verify the module signature against a
+trusted key and marks the kernel with `E`; it loads the module anyway. The
+agent verified the signed manifest and the module hash before loading. With
+Secure Boot, enroll the module certificate as MOK and the `E` goes away.
+Every livepatch also sets `K`, and klp-build modules set `O`.
+
 **Does it affect tracing tools?**
 kretprobes on a patched function conflict with livepatches, and kprobes in a
 replaced function stop firing. `pve-klp check` warns about active kprobes.
@@ -215,6 +227,7 @@ Solutions GmbH.
 
 - [Architecture](docs/architecture.md): pipeline, manifest, agent rules
 - [Self-hosting](docs/self-hosting.md): your own pipeline and keys, fleet rollout
+- [Toolchains](docs/toolchains.md): compiler and snapshot values per kernel release
 - [APT repository](docs/apt-repository.md): publishing the agent package
 - [Catalog format](catalog/README.md): how CVE entries are written and reviewed
 - [Security policy](SECURITY.md)

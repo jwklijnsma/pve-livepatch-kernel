@@ -16,6 +16,8 @@ TAG="proxmox/$(pkgver "$KVER")"
 # Same release already prepared: keep the tree and klp-tmp, so klp-build can
 # reuse the original build (--short-circuit).
 if [ "$(cat "$OUT/.pve-klp-tag" 2>/dev/null)" = "$TAG" ]; then
+  # Leftover of v0.1.0's build.sh; it doubles the release suffix.
+  rm -f "$OUT/localversion-pve"
   log "source for $KVER already prepared at $OUT"
   exit 0
 fi
@@ -27,7 +29,7 @@ git -C "$OUT" fetch --tags origin
 git -C "$OUT" -c advice.detachedHead=false checkout --force "$TAG"
 git -C "$OUT" clean -fdxq
 
-# Apply Proxmox's patch queue. M0: confirm quilt vs. `gbp pq import`.
+# Apply Proxmox's patch queue.
 ( cd "$OUT" && QUILT_PATCHES=debian/patches quilt push -aq ) || die "applying debian/patches failed"
 # Commit the patched state so klp-build and `git apply --check` see a clean tree.
 git -C "$OUT" -c user.name=pve-klp -c user.email=pve-klp@localhost add -A
