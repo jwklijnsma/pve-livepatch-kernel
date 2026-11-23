@@ -12,7 +12,7 @@ jobs:
   rust:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target x86_64-unknown-linux-musl && rustup default stable
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo fmt --all --check
@@ -28,21 +28,21 @@ jobs:
   catalog:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo run --locked -q -p pve-klp-tool -- lint --catalog catalog
 
   shell:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck -x -S warning builder/*.sh
 
   deb:
     runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: apt-get update && apt-get install -y build-essential debhelper ca-certificates rustup
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: PATH="$HOME/.cargo/bin:$PATH" dpkg-buildpackage -us -uc -b -d
