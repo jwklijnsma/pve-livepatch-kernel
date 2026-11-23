@@ -17,16 +17,16 @@ jobs:
     runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
-      - uses: actions/checkout@v4
-      - run: apt-get update && apt-get install -y build-essential debhelper curl ca-certificates dpkg-dev
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: apt-get update && apt-get install -y build-essential debhelper ca-certificates dpkg-dev rustup
       - name: version matches tag
         run: |
           v="$(dpkg-parsechangelog -S Version | sed 's/-[^-]*$//')"
           [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "debian/changelog has $v, tag is ${GITHUB_REF_NAME}"; exit 1; }
-      - run: curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal
-      - run: . "$HOME/.cargo/env" && dpkg-buildpackage -us -uc -b -d
+      - run: rustup toolchain install stable --profile minimal && rustup default stable
+      - run: PATH="$HOME/.cargo/bin:$PATH" dpkg-buildpackage -us -uc -b -d
       - run: mkdir -p dist && mv ../pve-klp_*.deb dist/
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: deb
           path: dist/*.deb
@@ -34,17 +34,15 @@ jobs:
   static:
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: x86_64-unknown-linux-musl
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - run: rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl && rustup default stable
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
       - run: cargo build --release --locked -p pve-klp -p pve-klp-tool --target x86_64-unknown-linux-musl
       - run: |
           mkdir -p dist
           cp target/x86_64-unknown-linux-musl/release/pve-klp dist/pve-klp-x86_64-linux-musl
           cp target/x86_64-unknown-linux-musl/release/pve-klp-tool dist/pve-klp-tool-x86_64-linux-musl
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: static
           path: dist/*
@@ -55,8 +53,8 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           path: dist
           merge-multiple: true
