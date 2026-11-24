@@ -18,8 +18,13 @@ if [ "${1:-}" = "--skip-qemu-stage" ]; then SKIP_QEMU=1; shift; fi
 OUT=${1:?usage: publish.sh [--skip-qemu-stage] <workdir-out> <repo-root>}; REPO=${2:?repo root}
 require hvpatch-tool python3 sha256sum cmp
 M="$OUT/manifest.json"
-field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$M" "$1"; }
+# The output directory comes from the build host: only regular files, no
+# symlinks (a link to the manifest key would otherwise be published).
+regular "$M" "$OUT/resolved.json"
+field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$M" "$1"; }
 KVER=$(field kernel); MOD=$(field module); LEVEL=$(field level); RING=$(field ring)
+[[ "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || die "unexpected kernel in the manifest: $KVER"
+regular "$OUT/$MOD"
 [ "$RING" = canary ] || die "a fresh build goes to canary first (manifest says $RING); use promote.sh for higher rings"
 
 QEMU_NOTE="qemu:passed"
@@ -29,7 +34,8 @@ if [ "$SKIP_QEMU" = 1 ]; then
   QEMU_NOTE="qemu:SKIPPED"
   QEMU_ARGS=()
 else
-  [ -f "$OUT/qemu.ok" ] || die "no QEMU pass for this build: run qemu-test.sh first"
+  [ -e "$OUT/qemu.ok" ] || die "no QEMU pass for this build: run qemu-test.sh first"
+  regular "$OUT/qemu.ok"
 fi
 hvpatch-tool check-manifest --manifest "$M" --resolved "$OUT/resolved.json" --module "$OUT/$MOD" \
   ${QEMU_ARGS[@]+"${QEMU_ARGS[@]}"} || die "manifest does not match the build output; not publishing"
@@ -41,9 +47,9 @@ BASE="$REPO/v1/$KVER"
 publish_file "$OUT/$MOD" "$BASE/$MOD"
 publish_file "$OUT/${MOD%.ko}.source.tar.gz" "$BASE/${MOD%.ko}.source.tar.gz"
 for k in "$OUT"/linux-"$KVER"-*.tar.xz; do
-  [ -f "$k" ] && publish_file "$k" "$BASE/source/$(basename "$k")"
+  if [ -e "$k" ] || [ -L "$k" ]; then publish_file "$k" "$BASE/source/$(basename "$k")"; fi
 done
 for f in build.log functions.txt gate-a.txt resolved.json config-check.txt qemu.ok qemu.log; do
-  [ -f "$OUT/$f" ] && publish_file "$OUT/$f" "$BASE/$LEVEL/$f"
+  if [ -e "$OUT/$f" ] || [ -L "$OUT/$f" ]; then publish_file "$OUT/$f" "$BASE/$LEVEL/$f"; fi
 done
 publish_ring "$REPO" "$KVER" canary "$M" "$LEVEL" "kernel:$KVER level:$LEVEL ring:canary $QEMU_NOTE"

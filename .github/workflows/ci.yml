@@ -33,10 +33,12 @@ jobs:
       - run: cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog
       - name: fetch the upstream commits named in the catalog
         run: |
-          git init -q upstream
+          # One diff per commit: in a shallow clone, fetching several
+          # commits can turn one into a root commit and break git show.
+          mkdir -p upstream
           for c in $(sed -n 's/^upstream_commits:.*\[\(.*\)\].*/\1/p' catalog/*/meta.yaml | tr -d '" ' | tr ',' '\n' | sort -u); do
-            for r in https://github.com/torvalds/linux.git https://github.com/gregkh/linux.git; do
-              git -C upstream fetch -q --depth 2 "$r" "$c" 2>/dev/null && continue 2
+            for r in torvalds/linux gregkh/linux; do
+              curl -fsSL --retry 3 "https://github.com/$r/commit/$c.diff" -o "upstream/$c.diff" && continue 2
             done
             echo "::error::upstream commit $c not found in torvalds/linux or the stable tree"
             exit 1

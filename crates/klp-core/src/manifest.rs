@@ -105,6 +105,8 @@ pub enum ManifestError {
     Validity { built: DateTime<Utc>, expires: DateTime<Utc> },
     #[error("level 0 is reserved for \"no livepatch\"")]
     LevelZero,
+    #[error("{0} has an unexpected format")]
+    Provenance(&'static str),
 }
 
 impl Manifest {
@@ -142,6 +144,24 @@ impl Manifest {
         }
         if self.level == 0 {
             return Err(ManifestError::LevelZero);
+        }
+        // Provenance fields are written by the build pipeline from build
+        // output; keep them to their expected shape so nothing else (a key
+        // read through a planted symlink, say) can travel in them.
+        if let Some(img) = &self.builder_image {
+            let ok = !img.is_empty()
+                && img.len() <= 256
+                && img.bytes().all(|b| b.is_ascii_alphanumeric() || b":@/._+-".contains(&b));
+            if !ok {
+                return Err(ManifestError::Provenance("builder_image"));
+            }
+        }
+        if let Some(c) = &self.catalog_commit {
+            let sha = c.strip_suffix("-dirty").unwrap_or(c);
+            let ok = c == "unknown" || ((7..=64).contains(&sha.len()) && is_lower_hex(sha));
+            if !ok {
+                return Err(ManifestError::Provenance("catalog_commit"));
+            }
         }
         Ok(())
     }
@@ -193,6 +213,21 @@ mod tests {
             builder_image: None,
             catalog_commit: None,
         }
+    }
+
+    #[test]
+    fn provenance_fields_are_checked() {
+        let mut m = sample();
+        m.builder_image = Some("sha256:0123abcd".into());
+        m.catalog_commit = Some("83b351c3ade542bbfa1073e8c2d919826628252a-dirty".into());
+        assert_eq!(m.validate(), Ok(()));
+        m.catalog_commit = Some("unknown".into());
+        assert_eq!(m.validate(), Ok(()));
+        m.catalog_commit = Some("-----BEGIN PRIVATE KEY-----\nMIIEvQ".into());
+        assert_eq!(m.validate(), Err(ManifestError::Provenance("catalog_commit")));
+        m.catalog_commit = None;
+        m.builder_image = Some("image with spaces".into());
+        assert_eq!(m.validate(), Err(ManifestError::Provenance("builder_image")));
     }
 
     #[test]

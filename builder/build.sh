@@ -32,15 +32,12 @@ export LOCALVERSION=
 # patched one ("changed data: linux_banner"). Fix both.
 export KBUILD_BUILD_USER=hvpatch KBUILD_BUILD_HOST=hvpatch-builder
 
-"$HERE/fetch-source.sh" "$KVER" "$TREE"
-# Fetch again unless every artifact the later stages use is there
-# (workdirs from older versions lack some of them).
+# The shipped artifacts come from fetch-shipped.sh in its own container;
+# run.sh mounts them read-only here.
 for f in config System.map Module.symvers build-id vmlinuz modules; do
-  if [ ! -e "$SHIPPED/$f" ]; then
-    TREE="$TREE" "$HERE/fetch-shipped.sh" "$KVER" "$SHIPPED"
-    break
-  fi
+  [ -e "$SHIPPED/$f" ] || die "missing $SHIPPED/$f (run fetch-shipped.sh first; run.sh does)"
 done
+"$HERE/fetch-source.sh" "$KVER" "$TREE"
 # Left behind by v0.1.0 of this script; it doubles the suffix.
 rm -f "$TREE/localversion-pve"
 
@@ -59,7 +56,7 @@ REL=$(make -C "$TREE" -s kernelrelease)
 log "resolving catalog"
 hvpatch-tool lint --catalog "$CATALOG"
 hvpatch-tool resolve --catalog "$CATALOG" --kernel "$KVER" --tree "$TREE" --out "$OUT/resolved.json"
-python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["patches"]))' "$OUT/resolved.json" > "$OUT/patches.list"
+python3 -I -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["patches"]))' "$OUT/resolved.json" > "$OUT/patches.list"
 mapfile -t PATCHES < <(grep -v '^$' "$OUT/patches.list" || true)
 [ "${#PATCHES[@]}" -gt 0 ] || { log "nothing to livepatch for $KVER"; exit 0; }
 
@@ -140,7 +137,8 @@ for p in "${PATCHES[@]}"; do
 done
 cp "$OUT/resolved.json" "$OUT/config-check.txt" "$OUT/functions.txt" "$SRC/"
 cp "$TREE/.config" "$SRC/config"
-cp "$HERE"/*.sh "$HERE/Containerfile" "$HERE/kernels.lock" "$SRC/builder/"
+cp "$HERE"/*.sh "$HERE"/*.py "$HERE/kernels.lock" "$SRC/builder/"
+[ -f "$HERE/Containerfile" ] && cp "$HERE/Containerfile" "$SRC/builder/"
 cat > "$SRC/SOURCE.md" <<EOF
 # Corresponding source of $NAME.ko
 

@@ -376,6 +376,13 @@ pub fn check_patch_id(l: &Loaded, upstream: &Path) -> Result<Option<String>> {
         if !is_commit_id(c) {
             return Ok(Some(format!("upstream commit {c:?} is not a hex sha (12-40 chars)")));
         }
+        // Either a directory of `<sha>.diff` files (downloaded per commit,
+        // which avoids shallow-clone pitfalls) or a git checkout.
+        let diff_file = upstream.join(format!("{c}.diff"));
+        if diff_file.is_file() {
+            theirs.extend_from_slice(&std::fs::read(&diff_file)?);
+            continue;
+        }
         let out =
             Command::new("git").arg("-C").arg(upstream).args(["show", "--format=", "--end-of-options", c]).output()?;
         if !out.status.success() {
@@ -605,6 +612,28 @@ class: not-livepatchable
         assert!(p.iter().any(|m| m.contains("reason")));
         assert!(!p.iter().any(|m| m.contains("psa")), "empty psa means none: {p:?}");
         assert!(e[0].entry.psa.is_none() && e[0].entry.mitigation.is_none());
+    }
+
+    #[test]
+    fn patch_id_from_diff_directory() {
+        let t = tempfile::tempdir().unwrap();
+        let diff = "diff --git a/mm/gup.c b/mm/gup.c\nindex 1..2 100644\n--- a/mm/gup.c\n+++ b/mm/gup.c\n\
+@@ -1,3 +1,5 @@\n a\n+\tif (!n)\n+\t\treturn 0;\n b\n c\n";
+        write(
+            t.path(),
+            "CVE-2026-0010",
+            "id: CVE-2026-0010\ntitle: x\nupstream_commits: [\"0123456789abcdef\"]\nseverity: low\nclass: needs-manual\n",
+        );
+        let e = load(t.path()).unwrap();
+        let mut l = e[0].clone();
+        std::fs::write(l.dir.join("0001-fix.patch"), diff).unwrap();
+        l.entry.patches.insert("default".into(), "0001-fix.patch".into());
+        let up = t.path().join("upstream");
+        std::fs::create_dir(&up).unwrap();
+        std::fs::write(up.join("0123456789abcdef.diff"), diff).unwrap();
+        assert_eq!(check_patch_id(&l, &up).unwrap(), None);
+        std::fs::write(up.join("0123456789abcdef.diff"), diff.replace("return 0", "return 1")).unwrap();
+        assert!(check_patch_id(&l, &up).unwrap().unwrap().contains("differs"));
     }
 
     #[test]

@@ -65,7 +65,8 @@ enum Cmd {
     Lint {
         #[arg(long, default_value = "catalog")]
         catalog: PathBuf,
-        /// Upstream kernel git checkout for the patch-id comparison.
+        /// Upstream kernel git checkout, or a directory of `<sha>.diff`
+        /// files, for the patch-id comparison.
         #[arg(long)]
         upstream: Option<PathBuf>,
     },

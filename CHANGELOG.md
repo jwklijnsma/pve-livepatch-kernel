@@ -8,11 +8,17 @@ All notable changes to this project are documented here. The format follows
 
 ### Changed (build side)
 
-- **Three containers in `run.sh`:** build (repository read-only, no keys),
+- **Separate containers in `run.sh`:** fetch (the shipped packages,
+  read-only for every later stage), build (repository read-only, no keys),
   sign (only the key and the output, no kernel tree, no catalog, no
-  network) and QEMU test (no keys, no network). A malicious catalog patch or
-  kernel Makefile can no longer reach the signing key or change the build
-  scripts.
+  network) and QEMU test (no tree, no keys, no network). A malicious catalog
+  patch or kernel Makefile can no longer reach the signing key, change the
+  build scripts or the artifacts the module is checked against. Later
+  stages read the build output as untrusted data (regular files only, no
+  symlinks; values checked), the signing stage runs Gate A again, and no
+  stage after the build runs code from the kernel tree (own build-id
+  extractor and initramfs writer). The agent rejects manifests whose
+  provenance fields have an unexpected format.
 - **Module signing** with Debian's `sign-file` instead of the one built
   from the kernel tree, and the signature is verified against the
   certificate with openssl before anything is published.

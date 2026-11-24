@@ -33,7 +33,7 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential gcc-14 binutils bc bison flex cpio kmod rsync gawk \
-      libelf-dev libssl-dev libxxhash-dev libdw-dev dwarves zstd xz-utils \
+      libelf-dev libssl-dev libxxhash-dev libdw-dev dwarves zstd xz-utils lz4 bzip2 \
       git git-buildpackage quilt devscripts ca-certificates curl gnupg python3 \
       qemu-system-x86 busybox-static openssl \
  && apt-get install -y --no-install-recommends -t trixie-backports \
@@ -63,5 +63,5 @@ RUN cd /tmp && apt-get update && apt-get download "$KBUILD_PKG" \
  && rm -rf /tmp/kbuild ./*.deb /var/lib/apt/lists/*
 
 COPY hvpatch-tool /usr/local/bin/hvpatch-tool
-COPY *.sh /opt/hvpatch/builder/
+COPY *.sh *.py kernels.lock Containerfile /opt/hvpatch/builder/
 WORKDIR /work

@@ -16,7 +16,8 @@ ever compiled on a hypervisor.
 
 For each supported kernel release (`builder/run.sh <kver> <level>`):
 
-1. **Shipped artifacts** (`fetch-shipped.sh`): `proxmox-kernel-<kver>` and
+1. **Shipped artifacts** (`fetch-shipped.sh`, own container, read-only for
+   every later stage): `proxmox-kernel-<kver>` and
    `proxmox-headers-<kver>`; config, System.map, Module.symvers, the
    in-tree modules (unpacked if compressed), vmlinuz and the vmlinux
    build-id.
@@ -40,10 +41,11 @@ For each supported kernel release (`builder/run.sh <kver> <level>`):
 7. **Source bundle** for the GPL: patches, kernel tarball, config,
    toolchain, scripts.
 8. **Sign** (`sign-module.sh`, separate container without tree, catalog or
-   network): Debian's `sign-file`, signature verified against the
-   certificate with openssl, manifest written.
-9. **QEMU stage** (`qemu-test.sh`, separate container without keys or
-   network): reproducers before/with/after/again, target modules loaded
+   network): build output read as untrusted data (regular files only,
+   values checked), Gate A again, Debian's `sign-file`, signature verified
+   against the certificate with openssl, manifest written.
+9. **QEMU stage** (`qemu-test.sh`, separate container without tree, keys
+   or network; nothing from the tree is executed): reproducers before/with/after/again, target modules loaded
    after the patch, `replace=1`, patch/unpatch cycles under load, kernel
    log, build-id. Writes `qemu.ok` with the module hash.
 10. **Publish** (`publish.sh`) to `canary`; **promote** (`promote.sh`) what

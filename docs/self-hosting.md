@@ -66,19 +66,25 @@ build.
 KEYS=~/hvpatch-keys builder/run.sh 7.3.5-1-pve 1
 ```
 
-`run.sh` uses three containers, each with only what it needs:
+`run.sh` uses four containers, each with only what it needs:
 
-1. **build** (`build.sh`), repository read-only, no keys: the shipped
-   kernel and headers packages, the Proxmox source at the locked commit
-   with Proxmox's patch queue, the config and toolchain gate, catalog
+0. **fetch** (`fetch-shipped.sh`, once per kernel release): the kernel and
+   headers packages Proxmox shipped (config, System.map, Module.symvers,
+   modules, vmlinuz, build-id). Every later stage gets them read-only, so a
+   build cannot change what it is checked against.
+1. **build** (`build.sh`), repository read-only, no keys: the Proxmox
+   source at the locked commit with Proxmox's patch queue, the config and
+   toolchain gate, catalog
    resolution (each patch, then all of them in order), `klp-build`, Gate A
    (including: the module patches exactly the functions the catalog entries
    list), and the GPL source bundle.
 2. **sign** (`sign-module.sh`), no kernel tree, no catalog, no network:
-   signs with Debian's `sign-file` (not the one built from the tree),
-   verifies the signature against the certificate with openssl, and writes
-   the manifest.
-3. **test** (`qemu-test.sh`), no keys, no network: boots the unmodified
+   treats the build output as untrusted (regular files only, values
+   checked), runs Gate A again, signs with Debian's `sign-file` (not the
+   one built from the tree), verifies the signature against the
+   certificate with openssl, and writes the manifest.
+3. **test** (`qemu-test.sh`), no tree, no keys, no network, nothing from
+   the tree executed (own initramfs writer): boots the unmodified
    shipped kernel; runs the catalog reproducers before the patch; loads the
    livepatch (replacing the previous level if given); loads the target
    modules afterwards and checks they are patched; runs the reproducers

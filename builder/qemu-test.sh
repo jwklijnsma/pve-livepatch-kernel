@@ -19,25 +19,31 @@
 #   6. no BUG/Oops/WARNING in the kernel log
 #
 # Uses KVM when /dev/kvm is writable, otherwise TCG (slower, still fine).
+#
+# Runs no code from the kernel tree (run.sh does not even mount it): the
+# initramfs is written by mkinitramfs.py, the kernel and modules come from
+# the shipped packages, reproducers only from the catalog (CATALOG).
 source "$(dirname "$0")/lib.sh"
 KVER=${1:?kver}; WORK=${2:?workdir}; PREV_KO=${3:-}
 CYCLES=${CYCLES:-5}
-require qemu-system-x86_64 busybox gcc python3 modinfo sha256sum timeout
-OUT="$WORK/out"; SHIPPED="$WORK/shipped"; TREE="$WORK/src"
-MOD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["module"])' "$OUT/manifest.json")
+CATALOG=${CATALOG:-/work/catalog}
+HERE=$(cd "$(dirname "$0")" && pwd)
+require qemu-system-x86_64 busybox python3 modinfo sha256sum timeout gzip realpath
+OUT="$WORK/out"; SHIPPED="$WORK/shipped"
+regular "$OUT/manifest.json" "$OUT/functions.txt" "$OUT/resolved.json" "$SHIPPED/vmlinuz" "$SHIPPED/build-id"
+MOD=$(python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["module"])' "$OUT/manifest.json")
+[[ "$MOD" =~ ^[A-Za-z0-9_-]+\.ko$ ]] || die "unexpected module name in the manifest: $MOD"
 KO="$OUT/$MOD"
+regular "$KO"
 NAME=$(modinfo -F name "$KO")
 PREV=""
-[ -n "$PREV_KO" ] && PREV=$(modinfo -F name "$PREV_KO")
-for f in "$KO" "$SHIPPED/vmlinuz" "$SHIPPED/build-id" "$OUT/functions.txt" "$OUT/resolved.json" "$TREE/usr/gen_init_cpio.c"; do
-  [ -e "$f" ] || die "missing $f (run build.sh and sign-module.sh first)"
-done
+if [ -n "$PREV_KO" ]; then regular "$PREV_KO"; PREV=$(modinfo -F name "$PREV_KO"); fi
 
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
 # Modules the patch targets, plus their dependencies, in load order.
-python3 - "$OUT/functions.txt" "$SHIPPED/modules" "$TMP" > "$TMP/mods.list" <<'PY'
+python3 -I - "$OUT/functions.txt" "$SHIPPED/modules" "$TMP" > "$TMP/mods.list" <<'PY'
 import os, sys
 funcs, moddir, tmp = sys.argv[1:4]
 objs = sorted({l.split(":", 1)[0] for l in open(funcs) if ":" in l} - {"vmlinux"})
@@ -73,12 +79,23 @@ PY
 MODS=$(cut -d' ' -f1 "$TMP/mods.list" | paste -sd' ' -)
 TARGETS=$(cut -d: -f1 "$OUT/functions.txt" | sort -u | paste -sd' ' -)
 
-# Reproducers of the included fixes (resolved.json: [id, path] pairs).
-python3 -c '
-import json, sys
+# Reproducers of the included fixes (resolved.json: [id, path] pairs), only
+# regular files inside the catalog.
+CATALOG_REAL=$(realpath "$CATALOG")
+python3 -I -c '
+import json, re, sys
 for cve, path in json.load(open(sys.argv[1])).get("reproducers", []):
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", cve):
+        sys.exit(f"unexpected reproducer id {cve!r}")
     print(cve, path)
-' "$OUT/resolved.json" > "$TMP/repro.list"
+' "$OUT/resolved.json" > "$TMP/repro.raw"
+: > "$TMP/repro.list"
+while read -r id path; do
+  real=$(realpath -e "$path" 2>/dev/null) || die "reproducer $path for $id not found"
+  case "$real" in "$CATALOG_REAL"/*) ;; *) die "reproducer $path for $id is outside the catalog" ;; esac
+  regular "$real"
+  echo "$id $real" >> "$TMP/repro.list"
+done < "$TMP/repro.raw"
 REPROS=$(cut -d' ' -f1 "$TMP/repro.list" | paste -sd' ' -)
 
 cat > "$TMP/init" <<EOF
@@ -217,8 +234,7 @@ cp "$(command -v busybox)" "$TMP/busybox"
   while read -r m path; do echo "file /mods/$m.ko $path 0644 0 0"; done < "$TMP/mods.list"
   while read -r id path; do echo "file /repro/$id.sh $path 0755 0 0"; done < "$TMP/repro.list"
 } > "$TMP/initramfs.list"
-gcc -O2 -o "$TMP/gen_init_cpio" "$TREE/usr/gen_init_cpio.c"
-"$TMP/gen_init_cpio" "$TMP/initramfs.list" | gzip -9 > "$TMP/initrd.gz"
+python3 -I "$HERE/mkinitramfs.py" "$TMP/initramfs.list" | gzip -9 > "$TMP/initrd.gz"
 
 ACCEL=tcg; CPU=max
 if [ -w /dev/kvm ]; then ACCEL=kvm; CPU=host; fi
@@ -235,7 +251,7 @@ if ! grep -q '^HVPATCH:OK$' "$LOG"; then
 fi
 
 # The booted kernel is the one the manifest is bound to.
-BOOT_ID=$(grep '^HVPATCH:NOTES:' "$LOG" | cut -d: -f3 | python3 -c '
+BOOT_ID=$(grep '^HVPATCH:NOTES:' "$LOG" | cut -d: -f3 | python3 -I -c '
 import sys, struct
 b = bytes.fromhex(sys.stdin.read().strip()); o = 0
 while o + 12 <= len(b):

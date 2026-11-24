@@ -4,9 +4,15 @@
 # in-tree modules, vmlinux build-id).
 #
 # usage: fetch-shipped.sh <kver> <outdir>
+#
+# run.sh runs this in its own container before the build: the build
+# container (kernel Makefiles, catalog patches) only gets the result
+# read-only, so it cannot alter what the module is checked against. Runs no
+# code from the kernel tree.
 source "$(dirname "$0")/lib.sh"
 KVER=${1:?kver}; OUT=${2:?outdir}
-require apt-get dpkg-deb readelf
+HERE=$(cd "$(dirname "$0")" && pwd)
+require apt-get dpkg-deb python3 zstd xz
 mkdir -p "$OUT/debs" "$OUT/root"
 
 # The builder image configures the Proxmox repository (pve-no-subscription;
@@ -33,8 +39,7 @@ find -L "$OUT/modules/" -name '*.ko.gz' -exec gzip -d {} \;
 
 # vmlinux build-id: the x86 bzImage payload is a stripped ELF that keeps
 # .notes. Cross-checked against /sys/kernel/notes in the QEMU stage.
-[ -x "${TREE:-}/scripts/extract-vmlinux" ] || die "TREE must point to the kernel source (scripts/extract-vmlinux)"
-"$TREE/scripts/extract-vmlinux" "$R/boot/vmlinuz-$KVER" > "$OUT/vmlinux.shipped"
-readelf -n "$OUT/vmlinux.shipped" | awk '/Build ID/ {print $3}' > "$OUT/build-id"
-[ -s "$OUT/build-id" ] || die "could not read the vmlinux build-id from the shipped vmlinuz"
+python3 -I "$HERE/vmlinux-build-id.py" "$R/boot/vmlinuz-$KVER" "$OUT/vmlinux.shipped" > "$OUT/build-id" \
+  || die "could not read the vmlinux build-id from the shipped vmlinuz"
+grep -qxE '[0-9a-f]{40}' "$OUT/build-id" || die "unexpected build-id: $(cat "$OUT/build-id")"
 log "shipped artifacts for $KVER in $OUT"

@@ -9,6 +9,12 @@
 # catalog, no network. The signing tool is Debian's sign-file
 # (kernel-sign-file in the image), not the one built from the kernel tree.
 #
+# Everything in out/ was written by the build container and is treated as
+# untrusted: only regular files are read (no symlinks to the key), the
+# provenance values are checked for their format, and Gate A runs again
+# here against the shipped artifacts, which the build container could only
+# read.
+#
 # Environment:
 #   MODULE_KEY, MODULE_CERT   module signing key and certificate
 #   BUILDER_IMAGE             builder image id, recorded in the manifest
@@ -19,7 +25,21 @@ require hvpatch-tool kernel-sign-file openssl
 OUT="$WORK/out"; SHIPPED="$WORK/shipped"
 NAME=$(hvpatch-tool module-name --kernel "$KVER" --level "$LEVEL")
 KO="$OUT/$NAME.ko"
-[ -f "$KO" ] || die "no module $KO (run build.sh first)"
+[ -e "$KO" ] || die "no module $KO (run build.sh first)"
+regular "$KO" "$OUT/resolved.json" "$OUT/functions.txt" "$OUT/catalog-commit" "$SHIPPED/build-id" \
+  "$SHIPPED/System.map" "$SHIPPED/Module.symvers"
+CAT_COMMIT=$(head -c 100 "$OUT/catalog-commit")
+[[ "$CAT_COMMIT" =~ ^([0-9a-f]{40}(-dirty)?|unknown)$ ]] || die "unexpected catalog commit in $OUT/catalog-commit"
+BUILD_ID=$(head -c 100 "$SHIPPED/build-id")
+[[ "$BUILD_ID" =~ ^[0-9a-f]{40}$ ]] || die "unexpected build-id in $SHIPPED/build-id"
+[[ "$BUILDER_IMAGE" =~ ^[A-Za-z0-9:@/._+-]{1,256}$ ]] || die "unexpected BUILDER_IMAGE"
+rm -f "$OUT/manifest.json" "$OUT/qemu.ok"
+
+log "gate A (again, outside the build container)"
+hvpatch-tool gate-a --module "$KO" --kernel "$KVER" --expected-name "$NAME" \
+  --system-map "$SHIPPED/System.map" --symvers "$SHIPPED/Module.symvers" \
+  --modules-dir "$SHIPPED/modules" \
+  --functions "$OUT/functions.txt" --resolved "$OUT/resolved.json" >/dev/null
 if tail -c 28 "$KO" | grep -q 'Module signature appended'; then
   die "$KO is already signed; run build.sh again for a fresh module"
 fi
@@ -37,13 +57,12 @@ openssl cms -verify -binary -inform DER -in "$TMP/sig.p7" -content "$TMP/content
   -certfile "$TMP/cert.pem" -nointern -noverify -out /dev/null 2>"$TMP/err" \
   || die "the module signature does not verify against $MODULE_CERT: $(cat "$TMP/err")"
 log "signature verified against $(openssl x509 -in "$TMP/cert.pem" -noout -subject)"
-rm -f "$OUT/qemu.ok"
 
 log "manifest (unsigned, ring canary)"
 hvpatch-tool manifest --resolved "$OUT/resolved.json" --module "$KO" \
   --level "$LEVEL" --ring canary \
-  --build-id "$(cat "$SHIPPED/build-id")" --functions "$OUT/functions.txt" \
+  --build-id "$BUILD_ID" --functions "$OUT/functions.txt" \
   --builder-image "$BUILDER_IMAGE" \
-  --catalog-commit "$(cat "$OUT/catalog-commit")" \
+  --catalog-commit "$CAT_COMMIT" \
   --out "$OUT/manifest.json"
 log "done: $KO and $OUT/manifest.json (next: qemu-test.sh $KVER $WORK)"

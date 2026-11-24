@@ -22,7 +22,7 @@ BASE="$REPO/v1/$KVER"
 SRC="$BASE/$FROM/manifest.json"
 [ -f "$SRC" ] || die "ring $FROM has nothing for $KVER"
 hvpatch-tool verify --pubkey "$PUB" "$SRC" >/dev/null || die "the $FROM manifest does not verify with $PUB"
-field() { python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$SRC" "$1"; }
+field() { python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))[sys.argv[2]])' "$SRC" "$1"; }
 LEVEL=$(field level); MOD=$(field module); SHA=$(field sha256)
 [ "$(sha256sum "$BASE/$MOD" | cut -d' ' -f1)" = "$SHA" ] || die "$BASE/$MOD does not match the $FROM manifest"
 CURRENT=$(ring_level "$REPO" "$KVER" "$TO")

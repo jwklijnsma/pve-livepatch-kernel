@@ -11,11 +11,22 @@ series() { local v="${1%%-*}"; printf '%s' "${v%.*}"; }
 
 require() { for c in "$@"; do command -v "$c" >/dev/null || die "missing tool: $c"; done; }
 
+# Files written by an earlier, less trusted stage (the build container runs
+# kernel Makefiles and catalog patches) are only read if they are regular
+# files, not symlinks: a planted link to a key would otherwise be read in
+# the signing container or published by publish.sh.
+regular() {
+  local f
+  for f in "$@"; do
+    [ -f "$f" ] && [ ! -L "$f" ] || die "$f is not a regular file (symlink or missing)"
+  done
+}
+
 # Level of the manifest a ring currently points to (0 if none).
 ring_level() {
   local m="$1/v1/$2/$3/manifest.json"
   [ -f "$m" ] || { echo 0; return; }
-  python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["level"])' "$m"
+  python3 -I -c 'import json,sys; print(json.load(open(sys.argv[1]))["level"])' "$m"
 }
 
 # Sign a manifest and make <repo>/v1/<kver>/<ring> point to it atomically.
@@ -53,6 +64,7 @@ publish_ring() {
 # Copy a file into the repository, never replacing different content.
 publish_file() {
   local src="$1" dst="$2"
+  regular "$src"
   if [ -e "$dst" ]; then
     cmp -s "$src" "$dst" || die "$dst is already published with different content; publish a new level instead"
     return 0

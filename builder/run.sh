@@ -3,14 +3,17 @@
 #
 # usage: builder/run.sh <kver> <level> [previous-level.ko]
 #
-# Three containers, each with only what it needs:
-#   build   build.sh       repository read-only, build/<kver> writable,
-#                          no keys (it runs kernel Makefiles and catalog
-#                          patches)
-#   sign    sign-module.sh out/ writable, shipped/ read-only, the module key
-#                          read-only; no kernel tree, no catalog, no network
-#   test    qemu-test.sh   repository read-only, build/<kver> writable,
-#                          no keys, no network
+# Four containers, each with only what it needs:
+#   fetch   fetch-shipped.sh  the packages Proxmox shipped -> shipped/;
+#                             nothing else mounted, no code from the tree
+#   build   build.sh          repository read-only, shipped/ read-only,
+#                             build/<kver> writable, no keys (it runs
+#                             kernel Makefiles and catalog patches)
+#   sign    sign-module.sh    out/ writable, shipped/ read-only, the module
+#                             key read-only; no kernel tree, no catalog, no
+#                             network
+#   test    qemu-test.sh      out/ writable, shipped/ and the catalog
+#                             read-only; no tree, no keys, no network
 # Signing the manifest (publish.sh) is a separate step on the signing host.
 #
 # Environment:
@@ -56,17 +59,27 @@ case "$IMAGE_ID" in sha256:*) ;; *) IMAGE_ID="sha256:$IMAGE_ID" ;; esac
 
 PREV_ARG=()
 if [ -n "$PREV" ]; then
+  [ -f "$PREV" ] || die "previous module $PREV not found"
   PREV=$(cd "$(dirname "$PREV")" && pwd)/$(basename "$PREV")
-  case "$PREV" in "$ROOT"/*) PREV_ARG=("/work/${PREV#"$ROOT"/}") ;; *) die "previous module must be inside $ROOT" ;; esac
 fi
 DEV=()
 [ -e /dev/kvm ] && DEV=(--device /dev/kvm)
 
 W=/work/build/$KVER
-REPO_RO=(-v "$ROOT:/work:ro" -v "$BUILD:$W")
+SHIPPED_RO=(-v "$BUILD/shipped:$W/shipped:ro")
+
+# Shipped artifacts: fetched once per kernel release; delete
+# build/<kver>/shipped to fetch them again.
+if [ ! -s "$BUILD/shipped/build-id" ]; then
+  echo "run.sh: [0/3] fetch the shipped kernel packages"
+  rm -rf "$BUILD/shipped"
+  mkdir -p "$BUILD/shipped"
+  "$ENGINE" run --rm -v "$BUILD/shipped:$W/shipped" \
+    "$IMAGE" /opt/hvpatch/builder/fetch-shipped.sh "$KVER" "$W/shipped"
+fi
 
 echo "run.sh: [1/3] build (no keys)"
-"$ENGINE" run --rm "${REPO_RO[@]}" -w /work \
+"$ENGINE" run --rm -v "$ROOT:/work:ro" -v "$BUILD:$W" "${SHIPPED_RO[@]}" -w /work \
   -e BUILDER_IMAGE="$IMAGE_ID" -e CATALOG="/work/$CATALOG" \
   "$IMAGE" /opt/hvpatch/builder/build.sh "$KVER" "$LEVEL" "$W"
 if ! compgen -G "$BUILD/out/klp_*.ko" >/dev/null; then
@@ -76,13 +89,20 @@ fi
 
 echo "run.sh: [2/3] sign (key only here, no tree, no network)"
 "$ENGINE" run --rm --network=none \
-  -v "$BUILD/out:$W/out" -v "$BUILD/shipped:$W/shipped:ro" -v "$KEYS:/keys:ro" \
+  -v "$BUILD/out:$W/out" "${SHIPPED_RO[@]}" -v "$KEYS:/keys:ro" \
   -e BUILDER_IMAGE="$IMAGE_ID" -e MODULE_KEY=/keys/module.priv -e MODULE_CERT=/keys/module-cert.der \
   "$IMAGE" /opt/hvpatch/builder/sign-module.sh "$KVER" "$LEVEL" "$W"
 
-echo "run.sh: [3/3] QEMU stage (no keys, no network)"
-"$ENGINE" run --rm --network=none ${DEV[@]+"${DEV[@]}"} "${REPO_RO[@]}" -w /work \
-  -e CYCLES="${CYCLES:-5}" \
+echo "run.sh: [3/3] QEMU stage (no tree, no keys, no network)"
+PREV_MOUNT=()
+if [ -n "$PREV" ]; then
+  PREV_MOUNT=(-v "$PREV:/prev/$(basename "$PREV"):ro")
+  PREV_ARG=("/prev/$(basename "$PREV")")
+fi
+"$ENGINE" run --rm --network=none ${DEV[@]+"${DEV[@]}"} \
+  -v "$BUILD/out:$W/out" "${SHIPPED_RO[@]}" -v "$ROOT/$CATALOG:/work/catalog:ro" \
+  ${PREV_MOUNT[@]+"${PREV_MOUNT[@]}"} -w /work \
+  -e CYCLES="${CYCLES:-5}" -e CATALOG=/work/catalog \
   "$IMAGE" /opt/hvpatch/builder/qemu-test.sh "$KVER" "$W" ${PREV_ARG[@]+"${PREV_ARG[@]}"}
 
 echo "run.sh: done. Signed module and unsigned manifest in build/$KVER/out;"
