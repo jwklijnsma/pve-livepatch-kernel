@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   rust:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal --component clippy,rustfmt --target x86_64-unknown-linux-musl && rustup default stable
@@ -27,7 +27,7 @@ jobs:
 
   msrv:
     # The oldest Rust that README and Cargo.toml (rust-version) promise.
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install 1.88 --profile minimal && rustup default 1.88
@@ -35,7 +35,7 @@ jobs:
 
   deny:
     # Licenses, RustSec advisories, duplicate and unknown sources (deny.toml).
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
@@ -44,7 +44,7 @@ jobs:
           arguments: --all-features
 
   catalog:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal && rustup default stable
@@ -75,14 +75,14 @@ jobs:
         run: cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog --upstream upstream
 
   shell:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck -x -S warning builder/*.sh
       - run: shellcheck -s sh debian/hvpatch.postinst debian/hvpatch.postrm contrib/checkmk/hvpatch contrib/hooks/90-notify
 
   deb:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container: debian:trixie
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -101,7 +101,7 @@ jobs:
   # check reinstall, purge and a fresh install.
   deb-upgrade:
     needs: deb
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     container: debian:trixie
     env:
       DEBIAN_FRONTEND: noninteractive
