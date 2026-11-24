@@ -1,21 +1,24 @@
-# pve-klp
+# hvpatch
 
-**Kernel live patching for Proxmox VE 9.** Apply kernel security fixes to
-running hosts without a reboot and without your VMs noticing, then reboot at
-your next maintenance window instead of tonight.
+**Kernel live patching for Proxmox VE hypervisors.** Apply kernel security
+fixes to running hosts without a reboot and without your VMs noticing, then
+reboot at your next maintenance window instead of tonight.
 
-[![CI](https://github.com/prepaid-host/pve-klp/actions/workflows/ci.yml/badge.svg)](https://github.com/prepaid-host/pve-klp/actions/workflows/ci.yml)
+*hvpatch was called pve-klp up to version 0.1.6. Installing hvpatch takes
+over an existing pve-klp node; see the [changelog](CHANGELOG.md).*
+
+[![CI](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml/badge.svg)](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 ![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Proxmox VE 9](https://img.shields.io/badge/Proxmox%20VE-9-E57000.svg)
-[![Release](https://img.shields.io/github/v/release/prepaid-host/pve-klp?include_prereleases&sort=semver)](https://github.com/prepaid-host/pve-klp/releases)
+[![Release](https://img.shields.io/github/v/release/prepaid-host/hvpatch?include_prereleases&sort=semver)](https://github.com/prepaid-host/hvpatch/releases)
 
 ```console
-$ pve-klp status
+$ hvpatch status
 kernel:        7.3.5-1-pve
 ring:          stable
 state:         active
-livepatch:     klp_pve_7_3_5_1_p3 (level 3)
+livepatch:     klp_hvp_7_3_5_1_p3 (level 3)
 manifest:      level 3, signed by project, built 2026-11-23 09:00 (0 days ago), expires 2026-12-23
 fixed live:    CVE-2026-XXXXX, CVE-2026-YYYYY
 NOT covered:   CVE-2026-ZZZZZ (struct change), fixed in 7.3.6-1-pve
@@ -43,12 +46,12 @@ the host stays vulnerable, and for a guest-to-host escape that is the risk
 that matters.
 
 KernelCare covers PVE 7 and 8 only, and Proxmox has livepatching "under
-re-evaluation". pve-klp closes the gap with the kernel's own tooling, in the
+re-evaluation". hvpatch closes the gap with the kernel's own tooling, in the
 open, and without making you trust a third party.
 
 ## What you get
 
-- **One command to load, one to undo.** `pve-klp apply`, `pve-klp revert`.
+- **One command to load, one to undo.** `hvpatch apply`, `hvpatch revert`.
 - **Honest status.** For every CVE: fixed live, or "reboot required" and in
   which kernel it is fixed.
 - **Safe by default.** Signature, kernel build-id and module hash are checked
@@ -66,30 +69,30 @@ On a Proxmox VE 9 host with the opt-in 7.3 kernel:
 
 ```bash
 # 1. Install the agent (Debian package from the releases page)
-wget https://github.com/prepaid-host/pve-klp/releases/latest/download/pve-klp_amd64.deb
-apt install ./pve-klp_amd64.deb
+wget https://github.com/prepaid-host/hvpatch/releases/latest/download/hvpatch_amd64.deb
+apt install ./hvpatch_amd64.deb
 
 # 2. Point it at a repository and its signing key, and check the host
-pve-klp setup --repository https://klp.example.org --key https://klp.example.org/manifest.pub
+hvpatch setup --repository https://klp.example.org --key https://klp.example.org/manifest.pub
 
 # 3. Load the livepatch for the running kernel
-pve-klp apply
+hvpatch apply
 
 # 4. Optional: pick up new levels automatically
-pve-klp auto enable
+hvpatch auto enable
 ```
 
 Every release ships SHA256SUMS and signed build provenance, so you can check
 that a download was built by this repository's CI:
 
 ```bash
-gh attestation verify pve-klp_amd64.deb --repo prepaid-host/pve-klp
+gh attestation verify hvpatch_amd64.deb --repo prepaid-host/hvpatch
 ```
 
-A static binary (`pve-klp-x86_64-linux-musl`) is attached to each release as
+A static binary (`hvpatch-x86_64-linux-musl`) is attached to each release as
 well, for hosts where you do not want the Debian package.
 
-With Secure Boot, enroll the module certificate once: run `pve-klp mok enroll`
+With Secure Boot, enroll the module certificate once: run `hvpatch mok enroll`
 and confirm in MokManager on the next reboot (BMC or local console).
 
 The repository can be the project's (once published) or your own, built with
@@ -108,7 +111,7 @@ flowchart LR
   end
   SIG --> R[("static HTTPS<br/>repository")]
   subgraph node["Every PVE node"]
-    A["pve-klp apply"] --> V["verify signature,<br/>build-id, hash"]
+    A["hvpatch apply"] --> V["verify signature,<br/>build-id, hash"]
     V --> L["load, watch<br/>transition"]
     L --> P["post-checks:<br/>kernel log, taint,<br/>functions, hooks"]
   end
@@ -130,13 +133,13 @@ Details: [docs/architecture.md](docs/architecture.md).
 
 | Command | What it does |
 | --- | --- |
-| `pve-klp setup` | Set repository, ring and trusted key, then run `check` |
-| `pve-klp check` | Kernel config, ftrace, Secure Boot and MOK, keys, repository, tracing conflicts |
-| `pve-klp status [--json]` | Active level, fixed CVEs, CVEs that still need a reboot |
-| `pve-klp apply [--level N]` | Fetch, verify and load the livepatch for the running kernel |
-| `pve-klp revert` | Disable and unload; hold until the next explicit `apply` |
-| `pve-klp auto enable\|disable` | Hourly timer for new levels (off by default) |
-| `pve-klp mok enroll` | Enroll the module certificate for Secure Boot |
+| `hvpatch setup` | Set repository, ring and trusted key, then run `check` |
+| `hvpatch check` | Kernel config, ftrace, Secure Boot and MOK, keys, repository, tracing conflicts |
+| `hvpatch status [--json]` | Active level, fixed CVEs, CVEs that still need a reboot |
+| `hvpatch apply [--level N]` | Fetch, verify and load the livepatch for the running kernel |
+| `hvpatch revert` | Disable and unload; hold until the next explicit `apply` |
+| `hvpatch auto enable\|disable` | Hourly timer for new levels (off by default) |
+| `hvpatch mok enroll` | Enroll the module certificate for Secure Boot |
 
 After a reboot into the same kernel, the boot unit reloads the active level
 from the local cache before guests start. After a reboot into a new kernel,
@@ -163,8 +166,8 @@ nothing old is loaded.
 systemd shows these codes with LSB names (`status=3/NOTIMPLEMENTED` for a
 rejected manifest); only the meanings above apply.
 
-Metrics: `/var/lib/prometheus/node-exporter/pve_klp.prom`
-(`pve_klp_active_level`, `pve_klp_reboot_required`, `pve_klp_failed`, ...),
+Metrics: `/var/lib/prometheus/node-exporter/hvpatch.prom`
+(`hvpatch_active_level`, `hvpatch_reboot_required`, `hvpatch_failed`, ...),
 written whenever that directory exists (it does once the node_exporter
 textfile collector is set up). Set `textfile_dir` to change or `""` to turn
 it off.
@@ -224,7 +227,7 @@ Every livepatch also sets `K`, and klp-build modules set `O`.
 
 **Does it affect tracing tools?**
 kretprobes on a patched function conflict with livepatches, and kprobes in a
-replaced function stop firing. `pve-klp check` warns about active kprobes.
+replaced function stop firing. `hvpatch check` warns about active kprobes.
 
 **Is this an official Proxmox project?**
 No. It is an independent project and not affiliated with Proxmox Server
@@ -243,8 +246,8 @@ Solutions GmbH.
 
 | Path | Content |
 | --- | --- |
-| `crates/pve-klp` | node agent (Rust, single binary) |
-| `crates/pve-klp-tool` | build tool: catalog, Gate A, manifests, signing |
+| `crates/hvpatch` | node agent (Rust, single binary) |
+| `crates/hvpatch-tool` | build tool: catalog, Gate A, manifests, signing |
 | `crates/klp-core` | shared manifest, signature, policy and ELF code |
 | `catalog/` | reviewed CVE entries and patches |
 | `builder/` | build container and pipeline scripts |
@@ -256,8 +259,8 @@ Build: `make test`, `make static` (static musl binary), `make deb`. Rust 1.88+.
 
 Catalog entries, test reports and code are welcome:
 
-- Questions and ideas: [GitHub Discussions](https://github.com/prepaid-host/pve-klp/discussions)
-- Bugs and CVE requests: [issues](https://github.com/prepaid-host/pve-klp/issues/new/choose)
+- Questions and ideas: [GitHub Discussions](https://github.com/prepaid-host/hvpatch/discussions)
+- Bugs and CVE requests: [issues](https://github.com/prepaid-host/hvpatch/issues/new/choose)
 - How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md)
 - Vulnerabilities: privately, see [SECURITY.md](SECURITY.md)
 
@@ -265,3 +268,7 @@ Catalog entries, test reports and code are welcome:
 
 GPL-2.0-only, see [LICENSE](LICENSE). Livepatch modules and catalog patches
 are derived from the Linux kernel and are GPL-2.0 as well.
+
+Proxmox® is a registered trademark of Proxmox Server Solutions GmbH. hvpatch
+is an independent project and is not affiliated with or endorsed by Proxmox
+Server Solutions GmbH.

@@ -11,14 +11,14 @@ test:
 lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
-	cargo run --locked -q -p pve-klp-tool -- lint --catalog catalog
+	cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog
 
 fmt:
 	cargo fmt --all
 
 # Static agent binary (needs musl-tools for the TLS backend).
 static:
-	cargo build --release --locked -p pve-klp --target x86_64-unknown-linux-musl
+	cargo build --release --locked -p hvpatch --target x86_64-unknown-linux-musl
 
 # Debian package of the agent (run on Debian trixie / Proxmox VE 9).
 deb:
@@ -28,9 +28,9 @@ deb:
 ENGINE ?= podman
 builder-image:
 	command -v rustup >/dev/null && rustup target add x86_64-unknown-linux-musl || true
-	cargo build --release --locked -p pve-klp-tool --target x86_64-unknown-linux-musl
-	cp target/x86_64-unknown-linux-musl/release/pve-klp-tool builder/pve-klp-tool
-	$(ENGINE) build -t pve-klp-builder builder/
+	cargo build --release --locked -p hvpatch-tool --target x86_64-unknown-linux-musl
+	cp target/x86_64-unknown-linux-musl/release/hvpatch-tool builder/hvpatch-tool
+	$(ENGINE) build -t hvpatch-builder builder/
 
 clean:
 	cargo clean

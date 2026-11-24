@@ -1,0 +1,57 @@
+#!/bin/sh
+set -e
+
+# Takes over a node that ran pve-klp, the project's name up to 0.1.6. Runs
+# once: only while hvpatch has no configuration of its own yet. Old files are
+# copied, not moved, so nothing is lost if anything goes wrong.
+migrate_from_pve_klp() {
+	[ -e /etc/hvpatch/hvpatch.toml ] && return 0
+	[ -e /etc/pve-klp/pve-klp.toml ] || return 0
+	echo "hvpatch: taking over configuration, keys and state from pve-klp"
+	install -d -m 0755 /etc/hvpatch /etc/hvpatch/trusted.d /etc/hvpatch/hooks.d
+	sed -e 's#/etc/pve-klp/#/etc/hvpatch/#g' -e 's#/var/lib/pve-klp#/var/lib/hvpatch#g' \
+		/etc/pve-klp/pve-klp.toml > /etc/hvpatch/hvpatch.toml
+	chmod 0644 /etc/hvpatch/hvpatch.toml
+	for d in trusted.d hooks.d; do
+		if [ -d "/etc/pve-klp/$d" ]; then
+			cp -a "/etc/pve-klp/$d/." "/etc/hvpatch/$d/"
+		fi
+	done
+	if [ -e /etc/pve-klp/module-cert.der ] && [ ! -e /etc/hvpatch/module-cert.der ]; then
+		cp -a /etc/pve-klp/module-cert.der /etc/hvpatch/module-cert.der
+	fi
+	# State keeps the anti-rollback history and the cache the boot reload
+	# uses; both stay valid (modules named klp_pve_* are recognised).
+	if [ -d /var/lib/pve-klp ]; then
+		install -d -m 0755 /var/lib/hvpatch
+		for f in state.json cache; do
+			if [ -e "/var/lib/pve-klp/$f" ] && [ ! -e "/var/lib/hvpatch/$f" ]; then
+				cp -a "/var/lib/pve-klp/$f" "/var/lib/hvpatch/$f"
+			fi
+		done
+	fi
+	rm -f /var/lib/prometheus/node-exporter/pve_klp.prom
+	# The auto timer was on: keep it on under the new name.
+	if [ -L /etc/systemd/system/timers.target.wants/pve-klp-auto.timer ]; then
+		rm -f /etc/systemd/system/timers.target.wants/pve-klp-auto.timer
+		deb-systemd-helper enable hvpatch-auto.timer >/dev/null || true
+		if [ -d /run/systemd/system ]; then
+			deb-systemd-invoke start hvpatch-auto.timer >/dev/null || true
+		fi
+	fi
+	rm -f /etc/systemd/system/multi-user.target.wants/pve-klp-boot.service
+	echo "hvpatch: done. /etc/pve-klp and /var/lib/pve-klp can be removed (or: dpkg --purge pve-klp)."
+}
+
+if [ "$1" = "configure" ]; then
+	migrate_from_pve_klp
+	# /etc/hvpatch/hvpatch.toml belongs to the administrator (and to
+	# `hvpatch setup`). It is deliberately not a dpkg conffile: package
+	# upgrades never touch it and never prompt.
+	if [ ! -e /etc/hvpatch/hvpatch.toml ]; then
+		install -d -m 0755 /etc/hvpatch
+		install -m 0644 /usr/share/hvpatch/hvpatch.toml /etc/hvpatch/hvpatch.toml
+	fi
+fi
+
+#DEBHELPER#

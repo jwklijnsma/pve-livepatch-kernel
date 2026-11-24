@@ -1,0 +1,3 @@
+etc/hvpatch/trusted.d
+etc/hvpatch/hooks.d
+var/lib/hvpatch

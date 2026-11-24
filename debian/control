@@ -1,19 +1,21 @@
-Source: pve-klp
+Source: hvpatch
 Section: admin
 Priority: optional
 Maintainer: Christopher Sakel <christopher.sakel@icloud.com>
 Build-Depends: debhelper-compat (= 13), cargo (>= 1.88), rustc (>= 1.88)
 Standards-Version: 4.7.0
-Homepage: https://github.com/prepaid-host/pve-klp
-Vcs-Git: https://github.com/prepaid-host/pve-klp.git
-Vcs-Browser: https://github.com/prepaid-host/pve-klp
+Homepage: https://github.com/prepaid-host/hvpatch
+Vcs-Git: https://github.com/prepaid-host/hvpatch.git
+Vcs-Browser: https://github.com/prepaid-host/hvpatch
 Rules-Requires-Root: no
 
-Package: pve-klp
+Package: hvpatch
 Architecture: amd64
 Depends: ${misc:Depends}, ${shlibs:Depends}
 Recommends: mokutil
-Description: kernel livepatch agent for Proxmox VE hosts
+Conflicts: pve-klp
+Replaces: pve-klp
+Description: kernel livepatch agent for Proxmox VE hypervisors
  Fetches the signed livepatch manifest for exactly the running Proxmox VE
  kernel, verifies signature, kernel release, build-id and module hash, loads
  the module and watches the livepatch transition. A stalled transition is
@@ -22,3 +24,6 @@ Description: kernel livepatch agent for Proxmox VE hosts
  .
  A livepatch bridges the time until the next maintenance window. It does not
  replace installing the kernel update and rebooting.
+ .
+ This package replaces pve-klp, the project's former name, and takes over its
+ configuration, keys and state.

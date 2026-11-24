@@ -1,3 +1,10 @@
+hvpatch (0.2.0-1) trixie; urgency=medium
+
+  * Renamed from pve-klp. Conflicts with and replaces pve-klp and takes over
+    its configuration, keys, hooks, state and module cache once.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Tue, 24 Nov 2026 08:05:14 +0000
+
 pve-klp (0.1.6-1) trixie; urgency=medium
 
   * Build side only: resolve works with relative catalog paths and on

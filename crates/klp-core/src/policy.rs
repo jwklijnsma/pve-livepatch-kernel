@@ -10,7 +10,7 @@ use crate::manifest::Manifest;
 /// How the agent got here.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mode {
-    /// `pve-klp apply` or the auto timer: fresh manifest from the repo.
+    /// `hvpatch apply` or the auto timer: fresh manifest from the repo.
     Fetch,
     /// Boot unit: reload the module that was active before the reboot,
     /// from the local cache, into the same kernel.
@@ -127,7 +127,7 @@ pub fn decide(m: &Manifest, node: &NodeFacts, ctx: &Context, mode: Mode) -> Deci
         _ => {}
     }
     if ctx.held && !ctx.explicit {
-        return Decision::Skip("livepatching is on hold after `pve-klp revert`; run `pve-klp apply` to resume".into());
+        return Decision::Skip("livepatching is on hold after `hvpatch revert`; run `hvpatch apply` to resume".into());
     }
     let days_left = (m.expires - node.now).num_days();
     if (0..7).contains(&days_left) {
@@ -147,8 +147,8 @@ mod tests {
             kernel_build_id: Some("aabb".into()),
             level: 3,
             ring: "stable".into(),
-            module: "klp_pve_7_3_5_1_p3.ko".into(),
-            module_name: "klp_pve_7_3_5_1_p3".into(),
+            module: "klp_hvp_7_3_5_1_p3.ko".into(),
+            module_name: "klp_hvp_7_3_5_1_p3".into(),
             sha256: "0".repeat(64),
             built: "2026-11-23T09:00:00Z".parse().unwrap(),
             expires: "2026-12-23T09:00:00Z".parse().unwrap(),

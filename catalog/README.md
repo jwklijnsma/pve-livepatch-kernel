@@ -52,7 +52,7 @@ a reviewed function the module does not patch, stops the build.
 ## Patch order
 
 The patches of all entries a kernel needs go into one cumulative module,
-applied in catalog order (sorted by CVE id). `pve-klp-tool resolve --tree`
+applied in catalog order (sorted by CVE id). `hvpatch-tool resolve --tree`
 checks each patch on its own and then all of them one after another; it only
 reads the tree, so read-only trees work. A patch that does not apply to a
 kernel is a kernel mismatch (add a backport, or `--allow-conflicts` to report
@@ -64,7 +64,7 @@ rebase the later patch onto the earlier one.
 
 - Every entry arrives by pull request and names the upstream commit.
 - CI compares the patch with upstream via `git patch-id`
-  (`pve-klp-tool lint --upstream <linux.git>`); deviations need a `reason`.
+  (`hvpatch-tool lint --upstream <linux.git>`); deviations need a `reason`.
 - Two approvals, signed commits, protected main branch.
 - A backport for a specific kernel is a separate patch with its own review.
 - v1 entries use no callbacks and no shadow variables. That keeps replacing a

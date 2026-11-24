@@ -437,6 +437,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6dbf3de79e51f3d586ab4cb9d5c3e2c14aa28ed23d180cf89b4df0454a69cc87"
 
 [[package]]
+name = "hvpatch"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "clap_complete",
+ "hex",
+ "klp-core",
+ "libc",
+ "object",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror",
+ "toml",
+ "ureq",
+]
+
+[[package]]
+name = "hvpatch-tool"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "clap",
+ "hex",
+ "klp-core",
+ "object",
+ "serde",
+ "serde_json",
+ "serde_norway",
+ "sha2",
+ "tempfile",
+]
+
+[[package]]
 name = "hybrid-array"
 version = "0.4.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -504,7 +542,7 @@ dependencies = [
 
 [[package]]
 name = "klp-core"
-version = "0.1.6"
+version = "0.2.0"
 dependencies = [
  "anyhow",
  "base64",
@@ -604,44 +642,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9"
 dependencies = [
  "unicode-ident",
-]
-
-[[package]]
-name = "pve-klp"
-version = "0.1.6"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "clap_complete",
- "hex",
- "klp-core",
- "libc",
- "object",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "thiserror",
- "toml",
- "ureq",
-]
-
-[[package]]
-name = "pve-klp-tool"
-version = "0.1.6"
-dependencies = [
- "anyhow",
- "chrono",
- "clap",
- "hex",
- "klp-core",
- "object",
- "serde",
- "serde_json",
- "serde_norway",
- "sha2",
- "tempfile",
 ]
 
 [[package]]

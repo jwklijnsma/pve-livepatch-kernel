@@ -5,9 +5,9 @@
 | Component | Runs on | Does |
 | --- | --- | --- |
 | `catalog/` | Git | Reviewed CVE entries: upstream commit, class, patch, functions |
-| `builder/` + `pve-klp-tool` | Build host (container) | Source, config/toolchain gate, `klp-build`, Gate A, signing, manifest |
+| `builder/` + `hvpatch-tool` | Build host (container) | Source, config/toolchain gate, `klp-build`, Gate A, signing, manifest |
 | Static repository | Any HTTPS server or object store | Serves modules and signed manifests |
-| `pve-klp` | Every PVE node | Verifies and loads, watches the transition, reports |
+| `hvpatch` | Every PVE node | Verifies and loads, watches the transition, reports |
 
 Building, checking and signing happen only on the build side. Nothing is
 ever compiled on a hypervisor.
@@ -26,16 +26,16 @@ series):
    `pve-kernel.git`.
 3. **Config and toolchain gate.** Copy the shipped config into the tree, run
    `make olddefconfig`, and compare byte for byte with the shipped config
-   (`pve-klp-tool config-check`). The config records the compiler, assembler,
+   (`hvpatch-tool config-check`). The config records the compiler, assembler,
    linker, pahole and rustc versions, so this also pins the toolchain. Any
    difference aborts the build. `make kernelrelease` must equal `<kver>`.
-4. **Catalog.** `pve-klp-tool resolve` picks the entries the kernel still
+4. **Catalog.** `hvpatch-tool resolve` picks the entries the kernel still
    needs. Each patch is test-applied: applies → included; applies in reverse →
    already contained; neither → hard error (backport needed). Nothing is
    dropped silently.
-5. **Build.** `scripts/livepatch/klp-build -T -o klp_pve_<tag>_p<N>.ko
+5. **Build.** `scripts/livepatch/klp-build -T -o klp_hvp_<tag>_p<N>.ko
    <patches…>`. The original build is reused with `--short-circuit=2`.
-6. **Gate A** (`pve-klp-tool gate-a`) against the shipped artifacts:
+6. **Gate A** (`hvpatch-tool gate-a`) against the shipped artifacts:
    - `.modinfo`: `livepatch=Y`, vermagic release, module name;
    - modversion CRCs of all imported symbols against `Module.symvers`;
    - every livepatch relocation symbol `.klp.sym.<obj>.<sym>,<pos>` exists in
@@ -46,7 +46,7 @@ series):
    - the changed functions equal the union of the reviewed `functions` of
      the resolved catalog entries, in both directions.
 7. **Sign module** with `scripts/sign-file`.
-8. **Manifest** (`pve-klp-tool manifest`), unsigned until the QEMU stage
+8. **Manifest** (`hvpatch-tool manifest`), unsigned until the QEMU stage
    passed.
 9. **QEMU stage** (`qemu-test.sh`): boot the unmodified shipped kernel,
    load, wait for the transition, compare the functions in sysfs with the
@@ -57,7 +57,7 @@ series):
 10. **Sign manifest and publish** to ring `canary` (`sign-manifest.sh`). It
     refuses without a `qemu.ok` for exactly this module.
     Promotion to `early` and `stable` re-issues a signed manifest with the
-    new ring (`pve-klp-tool promote`).
+    new ring (`hvpatch-tool promote`).
 
 ## Repository layout
 
@@ -77,8 +77,8 @@ v1/<kver>/build.log  functions.txt  gate-a.txt  resolved.json
   "kernel_build_id": "<vmlinux GNU build-id>",
   "level": 3,
   "ring": "canary",
-  "module": "klp_pve_7_3_5_1_p3.ko",
-  "module_name": "klp_pve_7_3_5_1_p3",
+  "module": "klp_hvp_7_3_5_1_p3.ko",
+  "module_name": "klp_hvp_7_3_5_1_p3",
   "sha256": "<signed .ko>",
   "built": "2026-11-23T09:00:00Z",
   "expires": "2026-12-23T09:00:00Z",
@@ -136,16 +136,16 @@ itself.
 
 | Path | Content |
 | --- | --- |
-| `/etc/pve-klp/pve-klp.toml` | configuration; created on first install, never touched by upgrades |
-| `/etc/pve-klp/trusted.d/*.pub` | trusted manifest keys |
-| `/etc/pve-klp/hooks.d/*` | post-transition hooks |
-| `/var/lib/pve-klp/state.json` | per kernel: highest accepted, desired level, hold, phase, last error |
-| `/var/lib/pve-klp/cache/<kver>/<level>/` | module, manifest and signature for boot and restore |
-| `/var/lib/prometheus/node-exporter/pve_klp.prom` | metrics |
+| `/etc/hvpatch/hvpatch.toml` | configuration; created on first install, never touched by upgrades |
+| `/etc/hvpatch/trusted.d/*.pub` | trusted manifest keys |
+| `/etc/hvpatch/hooks.d/*` | post-transition hooks |
+| `/var/lib/hvpatch/state.json` | per kernel: highest accepted, desired level, hold, phase, last error |
+| `/var/lib/hvpatch/cache/<kver>/<level>/` | module, manifest and signature for boot and restore |
+| `/var/lib/prometheus/node-exporter/hvpatch.prom` | metrics |
 
 ## Units
 
-- `pve-klp-boot.service`: `pve-klp boot` before `pve-guests.service`.
+- `hvpatch-boot.service`: `hvpatch boot` before `pve-guests.service`.
   It reloads the cached level for the running kernel, without network.
-- `pve-klp-auto.timer`: `pve-klp apply --timer` hourly. It is off by default;
-  turn it on with `pve-klp auto enable`.
+- `hvpatch-auto.timer`: `hvpatch apply --timer` hourly. It is off by default;
+  turn it on with `hvpatch auto enable`.

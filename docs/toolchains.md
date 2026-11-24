@@ -38,5 +38,5 @@ base image.
    trixie-backports (rustc, bindgen) carry those versions
    (`https://snapshot.debian.org/package/<name>/`).
 3. Build the image with `--build-arg SNAPSHOT=… --build-arg BACKPORTS_SNAPSHOT=…`
-   and tag it per toolchain, e.g. `pve-klp-builder:rust-1.94`.
+   and tag it per toolchain, e.g. `hvpatch-builder:rust-1.94`.
 4. Add a row to the table.

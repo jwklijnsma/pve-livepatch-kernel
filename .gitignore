@@ -1,11 +1,11 @@
 /target
 *.key
 /debian/.cargo
-/debian/pve-klp/
+/debian/hvpatch/
 /debian/files
 /debian/*.debhelper*
 /debian/*.substvars
 /debian/debhelper-build-stamp
 /build/
-/builder/pve-klp-tool
+/builder/hvpatch-tool
 /keys/

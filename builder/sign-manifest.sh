@@ -7,12 +7,12 @@
 # with the module's SHA-256). --skip-qemu-stage overrides that; it is meant
 # for emergencies and is recorded in the trusted comment of the signature.
 #
-# MANIFEST_KEY  pve-klp-tool secret key (or sign with `minisign -S` instead).
+# MANIFEST_KEY  hvpatch-tool secret key (or sign with `minisign -S` instead).
 source "$(dirname "$0")/lib.sh"
 SKIP_QEMU=0
 if [ "${1:-}" = "--skip-qemu-stage" ]; then SKIP_QEMU=1; shift; fi
 OUT=${1:?outdir}; REPO=${2:?repo root}; RING=${3:-canary}
-require pve-klp-tool python3 sha256sum
+require hvpatch-tool python3 sha256sum
 M="$OUT/manifest.json"
 KVER=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["kernel"])' "$M")
 MOD=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["module"])' "$M")
@@ -32,21 +32,21 @@ fi
 DST="$REPO/v1/$KVER"
 mkdir -p "$DST/$RING"
 if [ "$RING" != canary ]; then
-  pve-klp-tool promote --manifest "$M" --ring "$RING" --out "$OUT/manifest.$RING.json"
+  hvpatch-tool promote --manifest "$M" --ring "$RING" --out "$OUT/manifest.$RING.json"
   M="$OUT/manifest.$RING.json"
 fi
 # The manifest must still describe exactly this build (defense in depth:
 # the agent would reject most mismatches, but nothing edited gets signed).
 QEMU_ARGS=()
 [ "$SKIP_QEMU" = 1 ] || QEMU_ARGS=(--qemu-ok "$OUT/qemu.ok")
-pve-klp-tool check-manifest --manifest "$M" --resolved "$OUT/resolved.json" --module "$OUT/$MOD" \
+hvpatch-tool check-manifest --manifest "$M" --resolved "$OUT/resolved.json" --module "$OUT/$MOD" \
   ${QEMU_ARGS[@]+"${QEMU_ARGS[@]}"} || die "manifest does not match the build output; not signing"
 cp "$OUT/$MOD" "$DST/$MOD"
 for f in build.log functions.txt gate-a.txt resolved.json config-check.txt qemu.ok qemu.log; do
   [ -f "$OUT/$f" ] && cp "$OUT/$f" "$DST/"
 done
 cp "$M" "$DST/$RING/manifest.json.new"
-pve-klp-tool sign --key "${MANIFEST_KEY:?MANIFEST_KEY not set}" \
+hvpatch-tool sign --key "${MANIFEST_KEY:?MANIFEST_KEY not set}" \
   --trusted-comment "kernel:$KVER ring:$RING file:manifest.json $QEMU_NOTE" "$DST/$RING/manifest.json.new"
 # Publish signature first, manifest last, so readers never see a manifest
 # without its signature.

@@ -1,0 +1,15 @@
+[Unit]
+Description=Apply new kernel livepatch levels (hvpatch)
+Documentation=https://github.com/prepaid-host/hvpatch
+Wants=network-online.target
+After=network-online.target hvpatch-boot.service
+ConditionPathIsDirectory=/sys/kernel/livepatch
+
+[Service]
+Type=oneshot
+ExecStart=/usr/sbin/hvpatch --quiet apply --timer
+TimeoutStartSec=30min
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full

@@ -20,7 +20,7 @@ pub struct TrustedKey {
     pub key_id: String,
 }
 
-/// Set of trusted manifest keys, normally `/etc/pve-klp/trusted.d/*.pub`.
+/// Set of trusted manifest keys, normally `/etc/hvpatch/trusted.d/*.pub`.
 ///
 /// Several keys may be trusted at the same time; that is how rotation
 /// works: ship the new key, sign with it, remove the old key later.
@@ -105,7 +105,9 @@ mod signer {
     use blake2::{Blake2b512, Digest};
     use ed25519_dalek::{Signer, SigningKey};
 
-    const SECRET_HEADER: &str = "pve-klp secret key v1";
+    const SECRET_HEADER: &str = "hvpatch secret key v1";
+    /// Keys generated before the rename stay usable.
+    const LEGACY_SECRET_HEADERS: &[&str] = &["pve-klp secret key v1"];
 
     /// Unencrypted Ed25519 key in a tiny own format. Meant for CI signing
     /// runners and tests; for an offline or hardware-backed key use the
@@ -138,8 +140,9 @@ mod signer {
 
         pub fn from_file_string(s: &str) -> Result<Self> {
             let mut lines = s.lines();
-            if lines.next().map(str::trim) != Some(SECRET_HEADER) {
-                bail!("not a pve-klp secret key");
+            let header = lines.next().map(str::trim).unwrap_or_default();
+            if header != SECRET_HEADER && !LEGACY_SECRET_HEADERS.contains(&header) {
+                bail!("not a hvpatch secret key");
             }
             let raw = B64.decode(lines.next().unwrap_or_default().trim()).context("secret key is not base64")?;
             if raw.len() != 40 {
@@ -179,7 +182,7 @@ mod signer {
             sig_box.extend_from_slice(&self.keynum);
             sig_box.extend_from_slice(&sig);
             Ok(format!(
-                "untrusted comment: signature from pve-klp key {}\n{}\ntrusted comment: {}\n{}\n",
+                "untrusted comment: signature from hvpatch key {}\n{}\ntrusted comment: {}\n{}\n",
                 self.key_id(),
                 B64.encode(sig_box),
                 trusted_comment,
@@ -252,6 +255,13 @@ mod tests {
     fn empty_store_rejects() {
         let store = TrustStore::default();
         assert!(store.verify(b"x", &key(1).sign(b"x", "x").unwrap()).is_err());
+    }
+
+    #[test]
+    fn secret_key_from_before_the_rename_still_loads() {
+        let k = key(5);
+        let legacy = k.to_file_string().replace("hvpatch secret key v1", "pve-klp secret key v1");
+        assert_eq!(SecretKey::from_file_string(&legacy).unwrap().public_key_file(), k.public_key_file());
     }
 
     #[test]

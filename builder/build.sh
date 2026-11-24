@@ -19,7 +19,7 @@ KVER=${1:?kver}; LEVEL=${2:?level}; WORK=${3:?workdir}
 CATALOG=${CATALOG:-$PWD/catalog}
 JOBS=${JOBS:-$(nproc)}
 HERE=$(cd "$(dirname "$0")" && pwd)
-require pve-klp-tool make git gawk python3
+require hvpatch-tool make git gawk python3
 if [ -z "${BUILDER_IMAGE:-}" ]; then
   [ "${ALLOW_UNKNOWN_BUILDER:-0}" = 1 ] || die "BUILDER_IMAGE is not set (run via builder/run.sh, or ALLOW_UNKNOWN_BUILDER=1)"
   BUILDER_IMAGE=unknown
@@ -27,7 +27,7 @@ fi
 mkdir -p "$WORK"
 SHIPPED="$WORK/shipped"; TREE="$WORK/src"; OUT="$WORK/out"
 mkdir -p "$OUT"
-NAME=$(pve-klp-tool module-name --kernel "$KVER" --level "$LEVEL")
+NAME=$(hvpatch-tool module-name --kernel "$KVER" --level "$LEVEL")
 
 # The shipped config already carries the release suffix
 # (CONFIG_LOCALVERSION="-1-pve"). An unset LOCALVERSION makes
@@ -36,7 +36,7 @@ export LOCALVERSION=
 # linux_banner contains user@host of the build. In a container the host is
 # random per run, which makes the reused original build differ from the
 # patched one ("changed data: linux_banner"). Fix both.
-export KBUILD_BUILD_USER=pve-klp KBUILD_BUILD_HOST=pve-klp-builder
+export KBUILD_BUILD_USER=hvpatch KBUILD_BUILD_HOST=hvpatch-builder
 
 "$HERE/fetch-source.sh" "$KVER" "$TREE"
 # Fetch again unless every artifact the later stages use is there
@@ -53,13 +53,13 @@ rm -f "$TREE/localversion-pve"
 log "config and toolchain gate"
 cp "$SHIPPED/config" "$TREE/.config"
 make -C "$TREE" -s olddefconfig
-pve-klp-tool config-check --built "$TREE/.config" --shipped "$SHIPPED/config" | tee "$OUT/config-check.txt"
+hvpatch-tool config-check --built "$TREE/.config" --shipped "$SHIPPED/config" | tee "$OUT/config-check.txt"
 REL=$(make -C "$TREE" -s kernelrelease)
 [ "$REL" = "$KVER" ] || die "tree builds $REL, expected $KVER"
 
 log "resolving catalog"
-pve-klp-tool lint --catalog "$CATALOG"
-pve-klp-tool resolve --catalog "$CATALOG" --kernel "$KVER" --tree "$TREE" --out "$OUT/resolved.json"
+hvpatch-tool lint --catalog "$CATALOG"
+hvpatch-tool resolve --catalog "$CATALOG" --kernel "$KVER" --tree "$TREE" --out "$OUT/resolved.json"
 mapfile -t PATCHES < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1]))["patches"]))' "$OUT/resolved.json")
 [ "${#PATCHES[@]}" -gt 0 ] && [ -n "${PATCHES[0]}" ] || { log "nothing to livepatch for $KVER"; exit 0; }
 
@@ -68,7 +68,7 @@ log "klp-build: ${#PATCHES[@]} patch(es) -> $NAME.ko"
 # can reuse it (klp-tmp/1-orig in 7.3, klp-tmp/orig in 6.19/7.0), but only
 # if it was made with the same config, toolchain and build identity. A
 # cache without a matching stamp (e.g. from 0.1.1) is rebuilt once.
-STAMP="$TREE/klp-tmp/.pve-klp-orig-stamp"
+STAMP="$TREE/klp-tmp/.hvpatch-orig-stamp"
 WANT_STAMP=$(
   echo "user=$KBUILD_BUILD_USER host=$KBUILD_BUILD_HOST"
   sha256sum "$TREE/.config" | cut -d' ' -f1
@@ -104,7 +104,7 @@ gawk -F': changed function: ' 'NF == 2 {
 log "patched functions: $(paste -sd' ' "$FUNCS")"
 
 log "gate A"
-pve-klp-tool gate-a --module "$OUT/$NAME.ko" --kernel "$KVER" --expected-name "$NAME" \
+hvpatch-tool gate-a --module "$OUT/$NAME.ko" --kernel "$KVER" --expected-name "$NAME" \
   --system-map "$SHIPPED/System.map" --symvers "$SHIPPED/Module.symvers" \
   --modules-dir "$SHIPPED/modules" \
   --functions "$FUNCS" --resolved "$OUT/resolved.json" | tee "$OUT/gate-a.txt"
@@ -116,7 +116,7 @@ rm -f "$OUT/qemu.ok"
 
 log "manifest (unsigned, ring canary)"
 BUILD_ID=$(cat "$SHIPPED/build-id" 2>/dev/null || true)
-pve-klp-tool manifest --resolved "$OUT/resolved.json" --module "$OUT/$NAME.ko" \
+hvpatch-tool manifest --resolved "$OUT/resolved.json" --module "$OUT/$NAME.ko" \
   --level "$LEVEL" --ring canary \
   ${BUILD_ID:+--build-id "$BUILD_ID"} --functions "$FUNCS" \
   --builder-image "$BUILDER_IMAGE" \

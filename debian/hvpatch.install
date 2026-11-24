@@ -1,0 +1,6 @@
+target/release/hvpatch usr/sbin
+packaging/systemd/hvpatch-boot.service usr/lib/systemd/system
+packaging/systemd/hvpatch-auto.service usr/lib/systemd/system
+packaging/systemd/hvpatch-auto.timer usr/lib/systemd/system
+etc/hvpatch.toml usr/share/hvpatch
+target/completions/hvpatch usr/share/bash-completion/completions

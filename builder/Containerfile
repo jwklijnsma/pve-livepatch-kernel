@@ -1,4 +1,4 @@
-# Build environment for pve-klp livepatch modules.
+# Build environment for hvpatch livepatch modules.
 #
 # The toolchain must match the shipped kernel exactly: build.sh copies the
 # shipped /boot/config-<kver> into the tree, runs `make olddefconfig` and
@@ -6,7 +6,7 @@
 # AS/LD/PAHOLE/RUSTC/RUSTC_LLVM versions, so every tool below is pinned by
 # that check. See docs/toolchains.md for the values per kernel release.
 #
-# Build context is this directory, with a pve-klp-tool binary next to this
+# Build context is this directory, with a hvpatch-tool binary next to this
 # file (`make builder-image` does both). Values below are for 7.3.5-1-pve.
 
 ARG BASE=docker.io/library/debian:trixie-20261104@sha256:bfc36aecdece0387418759dba474aa856c026ca8087da3606b41b90ab0509c99
@@ -52,6 +52,6 @@ RUN curl -fsSL "$PVE_KEYRING_URL" -o /usr/share/keyrings/proxmox-archive-keyring
       > /etc/apt/sources.list.d/pve.list \
  && printf 'Package: *\nPin: origin download.proxmox.com\nPin-Priority: 100\n' > /etc/apt/preferences.d/pve
 
-COPY pve-klp-tool /usr/local/bin/pve-klp-tool
-COPY *.sh /opt/pve-klp/builder/
+COPY hvpatch-tool /usr/local/bin/hvpatch-tool
+COPY *.sh /opt/hvpatch/builder/
 WORKDIR /work

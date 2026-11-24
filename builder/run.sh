@@ -3,7 +3,7 @@
 #
 # usage: builder/run.sh <kver> <level> [previous-level.ko]
 #
-# Runs build.sh and qemu-test.sh in the pve-klp-builder image and records
+# Runs build.sh and qemu-test.sh in the hvpatch-builder image and records
 # the image id in the manifest. Signing the manifest is a separate step
 # (sign-manifest.sh), ideally on another machine.
 #
@@ -20,12 +20,12 @@ ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-podman}
 KEYS=${KEYS:-$ROOT/keys}
 CATALOG=${CATALOG:-catalog}
-IMAGE=pve-klp-builder
+IMAGE=hvpatch-builder
 
 command -v "$ENGINE" >/dev/null || { echo "run.sh: $ENGINE not found (set ENGINE=docker?)" >&2; exit 1; }
-[ -x "$ROOT/builder/pve-klp-tool" ] || {
-  echo "run.sh: builder/pve-klp-tool missing: run 'make builder-image', or download" >&2
-  echo "        pve-klp-tool-x86_64-linux-musl from the release page to builder/pve-klp-tool" >&2
+[ -x "$ROOT/builder/hvpatch-tool" ] || {
+  echo "run.sh: builder/hvpatch-tool missing: run 'make builder-image', or download" >&2
+  echo "        hvpatch-tool-x86_64-linux-musl from the release page to builder/hvpatch-tool" >&2
   exit 1
 }
 for f in module.priv module-cert.der; do
@@ -64,8 +64,8 @@ WORK=/work/build/$KVER
   -e MODULE_CERT="/work/${KEYS#"$ROOT"/}/module-cert.der" \
   "$IMAGE" bash -c '
     set -euo pipefail
-    /opt/pve-klp/builder/build.sh "$0" "$1" "$2"
+    /opt/hvpatch/builder/build.sh "$0" "$1" "$2"
     [ -f "$2/out/manifest.json" ] || exit 0
-    /opt/pve-klp/builder/qemu-test.sh "$0" "$2" "${3:-}"
+    /opt/hvpatch/builder/qemu-test.sh "$0" "$2" "${3:-}"
   ' "$KVER" "$LEVEL" "$WORK" ${PREV_ARG[@]+"${PREV_ARG[@]}"}
 echo "run.sh: done. Module and unsigned manifest in build/$KVER/out; sign with builder/sign-manifest.sh"

@@ -1,6 +1,6 @@
 [package]
 name = "klp-core"
-description = "Shared types and checks for pve-klp: manifest, signatures, policy, ELF inspection"
+description = "Shared types and checks for hvpatch: manifest, signatures, policy, ELF inspection"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

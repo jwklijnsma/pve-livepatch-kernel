@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically apply new kernel livepatch levels (hvpatch)
+Documentation=https://github.com/prepaid-host/hvpatch
+
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=1h
+RandomizedDelaySec=20min
+Persistent=false
+
+[Install]
+WantedBy=timers.target

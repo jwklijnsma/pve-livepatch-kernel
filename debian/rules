@@ -8,21 +8,21 @@ export CARGO_TARGET_DIR = $(CURDIR)/target
 	dh $@
 
 override_dh_auto_build:
-	cargo build --release --locked -p pve-klp
+	cargo build --release --locked -p hvpatch
 	mkdir -p target/completions
-	target/release/pve-klp completions bash > target/completions/pve-klp
+	target/release/hvpatch completions bash > target/completions/hvpatch
 
 override_dh_auto_test:
 ifeq (,$(filter nocheck,$(DEB_BUILD_OPTIONS)))
-	cargo test --release --locked -p klp-core -p pve-klp
+	cargo test --release --locked -p klp-core -p hvpatch
 endif
 
 override_dh_auto_install:
-	# handled by debian/pve-klp.install
+	# handled by debian/hvpatch.install
 
 override_dh_auto_clean:
 	rm -rf debian/.cargo
 
 override_dh_installsystemd:
-	dh_installsystemd pve-klp-boot.service
-	dh_installsystemd --no-enable --no-start pve-klp-auto.timer pve-klp-auto.service
+	dh_installsystemd hvpatch-boot.service
+	dh_installsystemd --no-enable --no-start hvpatch-auto.timer hvpatch-auto.service

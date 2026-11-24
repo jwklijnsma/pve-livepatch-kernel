@@ -21,7 +21,7 @@ A backport for a specific kernel is a separate patch file with its own review.
 - Rust: `make lint test` must pass (`cargo fmt`, `clippy -D warnings`, tests).
 - Shell: `shellcheck -x -S warning builder/*.sh`.
 - Agent changes that touch loading, transitions or verification need a test
-  in `crates/pve-klp/tests/agent.rs` against the emulated kernel.
+  in `crates/hvpatch/tests/agent.rs` against the emulated kernel.
 - Keep the agent small and dependency-light. It runs as root on hypervisors.
 
 ## Commit messages

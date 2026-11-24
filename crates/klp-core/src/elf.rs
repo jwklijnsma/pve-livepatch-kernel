@@ -258,13 +258,13 @@ mod tests {
     #[test]
     fn modinfo_versions_klpsyms() {
         let ko = testelf::livepatch_module(
-            "klp_pve_7_3_5_1_p3",
+            "klp_hvp_7_3_5_1_p3",
             "7.3.5-1-pve SMP preempt mod_unload modversions ",
             &[("printk", 0xdeadbeef), ("klp_enable_patch", 0x1234)],
             &[".klp.sym.vmlinux.tcp_foo.isra.0,0", ".klp.sym.kvm_amd.svm_bar,2"],
         );
         let mi = parse_modinfo(&ko).unwrap();
-        assert_eq!(mi.name(), Some("klp_pve_7_3_5_1_p3"));
+        assert_eq!(mi.name(), Some("klp_hvp_7_3_5_1_p3"));
         assert_eq!(mi.vermagic_release(), Some("7.3.5-1-pve"));
         assert!(mi.is_livepatch());
         assert!(!has_module_signature(&ko));

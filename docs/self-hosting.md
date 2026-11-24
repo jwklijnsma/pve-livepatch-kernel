@@ -8,7 +8,7 @@ fast but is optional.
 ## 1. Builder image (once per toolchain)
 
 ```bash
-make builder-image          # builds pve-klp-tool and the container image
+make builder-image          # builds hvpatch-tool and the container image
 ```
 
 This needs the musl target in your Rust toolchain; the Makefile adds it with
@@ -17,9 +17,9 @@ tool is pure Rust, so no musl C toolchain is needed. A locally built tool
 differs bit by bit from the release binary (different rustc); use the
 attested release binary if you want to match the project's builds.
 
-Without a Rust toolchain, download `pve-klp-tool-x86_64-linux-musl` from the
-release page to `builder/pve-klp-tool`, make it executable and run
-`podman build -t pve-klp-builder builder/`.
+Without a Rust toolchain, download `hvpatch-tool-x86_64-linux-musl` from the
+release page to `builder/hvpatch-tool`, make it executable and run
+`podman build -t hvpatch-builder builder/`.
 
 The image pins the base image by digest, Debian main and security by
 snapshot, and trixie-backports by a separate snapshot. The toolchain must
@@ -34,13 +34,13 @@ mkdir -p keys && cd keys
 
 # Module signing certificate (X.509), like for DKMS modules.
 openssl req -new -x509 -newkey rsa:4096 -sha512 -days 3650 -nodes \
-  -subj "/CN=pve-klp module signing/" \
+  -subj "/CN=hvpatch module signing/" \
   -keyout module.priv -outform DER -out module-cert.der
 
 # Manifest signing key (minisign-compatible): create it on the signing
 # host, not on the build host (`minisign -G` works too; the agent accepts
 # both). Only manifest.pub goes to the nodes.
-pve-klp-tool keygen --secret manifest.secret --public manifest.pub
+hvpatch-tool keygen --secret manifest.secret --public manifest.pub
 ```
 
 `keys/` is ignored by git.
@@ -73,7 +73,7 @@ starts. Remove trees of kernels you no longer serve.
 For level 2 and later, also test the atomic replace of the previous level:
 
 ```bash
-builder/run.sh 7.3.5-1-pve 2 build/7.3.5-1-pve-level1/klp_pve_7_3_5_1_p1.ko
+builder/run.sh 7.3.5-1-pve 2 build/7.3.5-1-pve-level1/klp_hvp_7_3_5_1_p1.ko
 ```
 
 ## 4. Sign and publish
@@ -101,13 +101,13 @@ Serve `/srv/klp` over HTTPS (any static web server or object store).
 ## 5. Nodes
 
 ```bash
-apt install ./pve-klp_amd64.deb
-pve-klp setup --repository https://klp.example.org --key manifest.pub --ring canary
-install -m 0644 keys/module-cert.der /etc/pve-klp/module-cert.der
-pve-klp apply
+apt install ./hvpatch_amd64.deb
+hvpatch setup --repository https://klp.example.org --key manifest.pub --ring canary
+install -m 0644 keys/module-cert.der /etc/hvpatch/module-cert.der
+hvpatch apply
 ```
 
-With Secure Boot, enroll the module certificate once (`pve-klp mok enroll`,
+With Secure Boot, enroll the module certificate once (`hvpatch mok enroll`,
 confirm at the console on the next boot). `mok enroll` asks for a one-time
 password on a terminal (mokutil reads it from the TTY, not from a pipe); for
 automation run it under `expect` or call `mokutil --import` yourself. Without Secure Boot the kernel
@@ -119,5 +119,5 @@ manifest signature check is what protects these hosts.
 
 The agent only knows its ring. The fleet order comes from your configuration
 management: canary node first, then one node per cluster, then the rest,
-each with a waiting time. Stop at the first `pve-klp apply` exit code other
+each with a waiting time. Stop at the first `hvpatch apply` exit code other
 than 0. Never patch all nodes of a cluster at once.

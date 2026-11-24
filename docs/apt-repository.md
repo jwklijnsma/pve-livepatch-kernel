@@ -3,10 +3,10 @@
 Goal: on a Proxmox VE node,
 
 ```
-curl -fsSL https://apt.example.org/pve-klp.asc -o /usr/share/keyrings/pve-klp.asc
-echo "deb [signed-by=/usr/share/keyrings/pve-klp.asc] https://apt.example.org trixie main" \
-  > /etc/apt/sources.list.d/pve-klp.list
-apt update && apt install pve-klp
+curl -fsSL https://apt.example.org/hvpatch.asc -o /usr/share/keyrings/hvpatch.asc
+echo "deb [signed-by=/usr/share/keyrings/hvpatch.asc] https://apt.example.org trixie main" \
+  > /etc/apt/sources.list.d/hvpatch.list
+apt update && apt install hvpatch
 ```
 
 APT repositories are signed with OpenPGP, separately from the livepatch
@@ -14,15 +14,15 @@ manifests (minisign). Use a dedicated key for the archive.
 
 ## 1. Build the package
 
-CI builds `pve-klp_<version>_amd64.deb` on Debian trixie (`make deb`, see
+CI builds `hvpatch_<version>_amd64.deb` on Debian trixie (`make deb`, see
 `.github/workflows/ci.yml`). Releases are tagged `v<version>`; the version
 in `debian/changelog` must match.
 
 ## 2. Create the archive key (once, offline)
 
 ```
-gpg --quick-gen-key "pve-klp APT archive <archive@example.org>" ed25519 sign 3y
-gpg --armor --export <KEYID> > pve-klp.asc
+gpg --quick-gen-key "hvpatch APT archive <archive@example.org>" ed25519 sign 3y
+gpg --armor --export <KEYID> > hvpatch.asc
 ```
 
 Keep the secret key on a hardware token or an offline machine. Only the
@@ -32,17 +32,17 @@ release job may use it.
 
 ```
 apt/conf/distributions:
-  Origin: pve-klp
-  Label: pve-klp
+  Origin: hvpatch
+  Label: hvpatch
   Codename: trixie
   Architectures: amd64
   Components: main
-  Description: pve-klp agent for Proxmox VE 9
+  Description: hvpatch agent for Proxmox VE 9
   SignWith: <KEYID>
 ```
 
 ```
-reprepro -b apt includedeb trixie dist/pve-klp_0.1.0-1_amd64.deb
+reprepro -b apt includedeb trixie dist/hvpatch_0.2.0-1_amd64.deb
 ```
 
 `reprepro` writes `dists/` and `pool/` and signs `InRelease` and
@@ -68,18 +68,26 @@ secrets, just like the manifest and module keys.
 
 ## Package contents
 
-`/usr/sbin/pve-klp`, systemd units, the configuration template
-`/usr/share/pve-klp/pve-klp.toml` (copied to `/etc/pve-klp/pve-klp.toml` on
+`/usr/sbin/hvpatch`, systemd units, the configuration template
+`/usr/share/hvpatch/hvpatch.toml` (copied to `/etc/hvpatch/hvpatch.toml` on
 first installation; not a conffile, so upgrades never prompt), empty
-`/etc/pve-klp/trusted.d/` and `hooks.d/`.
-
-Nodes that were installed with 0.1.3 or earlier still list
-`/etc/pve-klp/pve-klp.toml` as an *obsolete* conffile (`dpkg-query
---showformat='${Conffiles}\n' --show pve-klp`). That is harmless: upgrades
-do not touch it, and `dpkg --purge pve-klp` removes it, as for new
-installations. Nodes that hung at the 0.1.3 conffile prompt may have a
-`/etc/pve-klp/pve-klp.toml.dpkg-dist`; it is not used and can be deleted. The boot unit is
-enabled; the auto timer is installed but disabled. Trusted keys are not part
+`/etc/hvpatch/trusted.d/` and `hooks.d/`. The boot unit is enabled; the auto
+timer is installed but disabled. Trusted keys are not part
 of the package: project builds would ship a separate
-`pve-klp-archive-keyring`-style package with the project's manifest key,
+`hvpatch-archive-keyring`-style package with the project's manifest key,
 self-hosters put their own key into `trusted.d/`.
+
+## Nodes that ran pve-klp
+
+hvpatch was called pve-klp up to 0.1.6. The `hvpatch` package conflicts
+with and replaces `pve-klp`: installing it removes `pve-klp` and, once,
+copies `/etc/pve-klp/` (configuration with paths rewritten, trusted keys,
+hooks, module certificate) and `/var/lib/pve-klp/` (state with the
+anti-rollback history, module cache) to the new locations. An enabled auto
+timer stays enabled. A livepatch loaded by pve-klp (`klp_pve_*`) stays
+active and is recognised as hvpatch's own, so the next level replaces it.
+
+Afterwards `/etc/pve-klp` and `/var/lib/pve-klp` are no longer used;
+`dpkg --purge pve-klp` removes them (including the obsolete conffile of
+0.1.3 and earlier, and a `pve-klp.toml.dpkg-dist` left by the 0.1.3
+upgrade prompt).

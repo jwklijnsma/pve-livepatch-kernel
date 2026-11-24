@@ -14,11 +14,11 @@ body:
   - type: textarea
     id: status
     attributes:
-      label: Output of `pve-klp status --json` and `pve-klp check`
+      label: Output of `hvpatch status --json` and `hvpatch check`
       render: json
   - type: input
     id: kernel
     attributes:
-      label: Kernel (`uname -r`) and pve-klp version
+      label: Kernel (`uname -r`) and hvpatch version
     validations:
       required: true

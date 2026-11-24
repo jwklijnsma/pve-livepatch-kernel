@@ -1,14 +1,24 @@
 //! Module naming and version comparison.
 
 /// Prefix of every module this project builds. The agent only ever touches
-/// livepatches with this prefix.
-pub const MODULE_PREFIX: &str = "klp_pve_";
+/// livepatches with this prefix (or a legacy one).
+pub const MODULE_PREFIX: &str = "klp_hvp_";
+
+/// Prefixes of modules built before the project was renamed from pve-klp.
+/// Still recognised as ours, so a node keeps its active patch and replaces
+/// it with the next level instead of treating it as foreign.
+pub const LEGACY_PREFIXES: &[&str] = &["klp_pve_"];
+
+/// A livepatch module built by this project (current or legacy name).
+pub fn is_ours(name: &str) -> bool {
+    name.starts_with(MODULE_PREFIX) || LEGACY_PREFIXES.iter().any(|p| name.starts_with(p))
+}
 
 /// `MODULE_NAME_LEN` is `64 - sizeof(unsigned long)` on 64-bit kernels.
 pub const MODULE_NAME_MAX: usize = 55;
 
 /// Module name for a kernel release and level, e.g.
-/// `7.3.5-1-pve`, 3 -> `klp_pve_7_3_5_1_p3`.
+/// `7.3.5-1-pve`, 3 -> `klp_hvp_7_3_5_1_p3`.
 ///
 /// Every level gets a distinct name: a module with the same name cannot be
 /// loaded twice, and atomic replace needs the new module loaded while the old
@@ -21,7 +31,7 @@ pub fn module_name(kernel_release: &str, level: u32) -> String {
 
 /// Extract the level from a module name produced by [`module_name`].
 pub fn level_from_module_name(name: &str) -> Option<u32> {
-    if !name.starts_with(MODULE_PREFIX) {
+    if !is_ours(name) {
         return None;
     }
     let (_, lvl) = name.rsplit_once("_p")?;
@@ -61,9 +71,12 @@ mod tests {
 
     #[test]
     fn names() {
-        assert_eq!(module_name("7.3.5-1-pve", 3), "klp_pve_7_3_5_1_p3");
-        assert_eq!(level_from_module_name("klp_pve_7_3_5_1_p3"), Some(3));
+        assert_eq!(module_name("7.3.5-1-pve", 3), "klp_hvp_7_3_5_1_p3");
+        assert_eq!(level_from_module_name("klp_hvp_7_3_5_1_p3"), Some(3));
         assert_eq!(level_from_module_name("livepatch_foo"), None);
+        // Modules from before the rename keep their level.
+        assert_eq!(level_from_module_name("klp_pve_7_3_5_1_p3"), Some(3));
+        assert!(is_ours("klp_pve_7_3_5_1_p3") && is_ours("klp_hvp_7_3_5_1_p4") && !is_ours("kpatch_x"));
         assert!(is_valid_module_name(&module_name("7.3.15-12-pve", 1234)));
     }
 
