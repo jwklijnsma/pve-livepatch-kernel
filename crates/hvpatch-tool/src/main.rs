@@ -437,6 +437,7 @@ fn run(cli: Cli) -> Result<bool> {
                 superseded_by_kernel: superseded_by,
                 builder_image,
                 catalog_commit,
+                states: r.states.clone(),
             };
             m.validate()?;
             write(&out, m.to_json_pretty().as_bytes())?;
@@ -603,6 +604,9 @@ fn check_manifest(manifest: &Path, resolved: &Path, module: &Path, qemu_ok: Opti
     have.sort();
     if want != have {
         errs.push("not_covered differs from the resolved catalog".into());
+    }
+    if m.states != r.states {
+        errs.push("states differ from the resolved catalog".into());
     }
 
     if let Some(q) = qemu_ok {

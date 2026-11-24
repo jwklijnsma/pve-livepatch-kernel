@@ -113,6 +113,7 @@ impl Env {
             superseded_by_kernel: None,
             builder_image: None,
             catalog_commit: None,
+            states: vec![],
         }
     }
 
@@ -1022,4 +1023,30 @@ fn revocation_list_replay_and_bad_signature() {
     let tampered = std::fs::read_to_string(&f).unwrap().replace("\"sequence\": 6", "\"sequence\": 9");
     std::fs::write(&f, tampered).unwrap();
     assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(e)) if e.contains("revocation list")));
+}
+
+// --- States ----------------------------------------------------------------
+
+#[test]
+fn a_level_must_carry_the_states_of_the_active_one() {
+    use klp_core::manifest::KlpState;
+    let env = Env::new();
+    let mut m1 = env.manifest(1);
+    m1.states = vec![KlpState { id: 7, version: 2 }];
+    let ko1 = ko(&m1.module_name, KVER, true);
+    env.publish(m1, &ko1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    // Level 2 dropped state 7: refused before anything is loaded.
+    env.publish_level(2);
+    let e = a.apply(&explicit()).unwrap_err();
+    assert!(matches!(&e, ApplyError::Rejected(s) if s.contains("state 7")), "{e}");
+    assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
+    assert!(env.state().get(KVER).quarantined.is_empty(), "a policy refusal is not a failed load");
+    // Level 3 carries it at a higher version.
+    let mut m3 = env.manifest(3);
+    m3.states = vec![KlpState { id: 7, version: 3 }];
+    let ko3 = ko(&m3.module_name, KVER, true);
+    env.publish(m3, &ko3);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 3, .. }));
 }

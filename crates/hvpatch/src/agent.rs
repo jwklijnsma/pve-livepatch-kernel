@@ -296,6 +296,7 @@ impl<K: KernelOps> Agent<K> {
             }
             Go::Skip(why) => return Ok(Outcome::Skipped(why)),
         };
+        self.check_states(&release, m).map_err(ApplyError::Rejected)?;
         self.save_phase(&mut state, &release, Phase::Fetched, None)?;
 
         let res = self.download_and_activate(&mut state, &release, &v, repo.as_ref(), active.map(|a| a.1));
@@ -496,6 +497,30 @@ impl<K: KernelOps> Agent<K> {
         self.save_phase(state, release, Phase::Reverted, Some(format!("level {level} was revoked: {}", r.reason)))?;
         self.write_runtime_files(release, None);
         Ok(())
+    }
+
+    /// Atomic replace hands the active level's states (shadow variables
+    /// and the like, set up by its callbacks) to the new one. klp-build
+    /// modules do not declare states to the kernel, so check the manifests.
+    fn check_states(&self, release: &str, new: &Manifest) -> Result<(), String> {
+        let Ok(patches) = self.kernel.livepatches() else { return Ok(()) };
+        let Some(level) =
+            patches.iter().filter(|p| is_ours(&p.name) && p.enabled).find_map(|p| level_from_module_name(&p.name))
+        else {
+            return Ok(());
+        };
+        if level == new.level {
+            return Ok(());
+        }
+        match self.cached_manifest(release, level) {
+            Some((active, _)) => klp_core::manifest::states_compatible(&active.states, &new.states),
+            None => {
+                self.log(format!(
+                    "the manifest of the active level {level} is not cached; its states cannot be checked"
+                ));
+                Ok(())
+            }
+        }
     }
 
     /// After an error, never leave the stored phase at "in progress".
@@ -1128,6 +1153,8 @@ impl<K: KernelOps> Agent<K> {
             Go::Apply(_) => {}
             _ => return Err(ApplyError::Precondition(format!("level {level} cannot be restored"))),
         }
+        self.check_states(release, &v.manifest)
+            .map_err(|e| ApplyError::Precondition(format!("level {level} cannot replace the active one: {e}")))?;
         let file = self.open_verified_module(&v.manifest, release, &dir)?;
         self.log(format!("putting level {level} back by atomic replace"));
         // The old module is still loaded without a patch after it was

@@ -51,6 +51,11 @@ pub struct Entry {
     /// Reviewed list of functions this fix patches (`object:function`).
     #[serde(default)]
     pub functions: Vec<String>,
+    /// System states the fix's callbacks set up (shadow variables, changed
+    /// settings): `[{id: 1, version: 1}]`. Ids are unique across the
+    /// catalog; raise the version when the state's layout changes.
+    #[serde(default)]
+    pub states: Vec<klp_core::manifest::KlpState>,
     #[serde(default)]
     pub mitigation: Option<String>,
     #[serde(default)]
@@ -177,6 +182,9 @@ pub struct Resolved {
     /// by the QEMU stage before and after the livepatch.
     #[serde(default)]
     pub reproducers: Vec<(String, PathBuf)>,
+    /// States the included fixes' callbacks set up (highest version per id).
+    #[serde(default)]
+    pub states: Vec<klp_core::manifest::KlpState>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -326,7 +334,14 @@ pub fn resolve(
         if let Some(rep) = e.tests.get("reproducer").filter(|v| v.starts_with("tests/")) {
             r.reproducers.push((e.id.clone(), l.dir.join(rep)));
         }
+        for s in &e.states {
+            match r.states.iter_mut().find(|x| x.id == s.id) {
+                Some(x) => x.version = x.version.max(s.version),
+                None => r.states.push(*s),
+            }
+        }
     }
+    r.states.sort();
     // Each patch applies on its own; klp-build applies them all, in this
     // order. Two fixes in the same function can still conflict together.
     if let Some(tree) = tree {

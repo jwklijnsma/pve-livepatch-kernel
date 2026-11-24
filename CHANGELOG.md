@@ -42,6 +42,9 @@ All notable changes to this project are documented here. The format follows
   `fixed_in_pve`; Gate A treats a missing shipped module as an error;
   compressed shipped modules are unpacked; `build.sh` starts from an empty
   output directory and marks a dirty catalog.
+- `cve-scan --contained` only counts real backport markers ("cherry picked
+  from", "commit … upstream", "Upstream commit") and leaves out reverted
+  backports; `Fixes:` lines do not hide a CVE.
 - CI compares the catalog patches with the upstream commits (`git
   patch-id`), as documented. The commits come from git.kernel.org (mainline
   or stable) only, which serves nothing outside its own history.
@@ -50,6 +53,13 @@ All notable changes to this project are documented here. The format follows
   plain directories before the next stage.
 
 ### Added
+
+- **States for fixes with callbacks or shadow variables** (catalog
+  `states`, manifest `states`): a level must carry every state of the
+  active level at the same or a higher version, or the agent refuses it
+  before loading (klp-build modules do not declare states to the kernel
+  yet). Manifests without states are unchanged, so older agents keep
+  reading them. Guide: `docs/writing-fixes.md`.
 
 - **`hvpatch-tool cve-scan` and `builder/cve-scan.sh`:** kernel CVEs that
   affect a Proxmox kernel and are not in the catalog yet, from the kernel

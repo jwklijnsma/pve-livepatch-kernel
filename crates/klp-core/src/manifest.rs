@@ -61,6 +61,40 @@ pub struct Manifest {
     pub builder_image: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub catalog_commit: Option<String>,
+    /// System states the module's callbacks set up (shadow variables, a
+    /// changed setting), like the kernel's `struct klp_state`. A level that
+    /// replaces another must carry each of its states at the same or a
+    /// higher version, or its callbacks would not know how to take them
+    /// over. klp-build cannot declare states in the module yet, so the
+    /// agent enforces this from the manifests. Omitted when empty, so
+    /// manifests without states stay readable by older agents.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub states: Vec<KlpState>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct KlpState {
+    pub id: u64,
+    pub version: u32,
+}
+
+/// Can `new` replace `active` (atomic replace)? Every state of the active
+/// level must be in the new one at the same or a higher version.
+pub fn states_compatible(active: &[KlpState], new: &[KlpState]) -> Result<(), String> {
+    for a in active {
+        match new.iter().find(|n| n.id == a.id) {
+            Some(n) if n.version >= a.version => {}
+            Some(n) => {
+                return Err(format!(
+                    "state {} is at version {} in the active level, {} in the new one",
+                    a.id, a.version, n.version
+                ));
+            }
+            None => return Err(format!("the active level set up state {}, which the new one does not carry", a.id)),
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -212,7 +246,19 @@ mod tests {
             superseded_by_kernel: None,
             builder_image: None,
             catalog_commit: None,
+            states: vec![],
         }
+    }
+
+    #[test]
+    fn states() {
+        let s = |id, version| KlpState { id, version };
+        assert!(states_compatible(&[], &[s(1, 1)]).is_ok());
+        assert!(states_compatible(&[s(1, 1)], &[s(1, 2), s(2, 1)]).is_ok());
+        assert!(states_compatible(&[s(1, 2)], &[s(1, 1)]).unwrap_err().contains("version"));
+        assert!(states_compatible(&[s(1, 1)], &[]).unwrap_err().contains("does not carry"));
+        // Empty states are not serialized: older agents keep reading the manifest.
+        assert!(!sample().to_json_pretty().contains("states"));
     }
 
     #[test]

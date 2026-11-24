@@ -176,9 +176,52 @@ pub struct Feeds {
     pub contained: HashSet<String>,
 }
 
-/// All 40-hex commit ids in a text (e.g. `git log --format=%B` of a tree).
-pub fn commit_ids(text: &str) -> HashSet<String> {
-    text.split(|c: char| !c.is_ascii_hexdigit()).filter(|w| w.len() == 40).map(|w| w.to_ascii_lowercase()).collect()
+/// Mainline commits a kernel tree contains, from
+/// `git log --format='%x00%H%n%B'`: each commit itself, and the commits its
+/// message names as backported ("cherry picked from commit X",
+/// "commit X upstream.", "[ Upstream commit X ]", "Upstream commit X").
+/// Other mentions (`Fixes:`, links) do not count, and a backport that was
+/// reverted later ("This reverts commit <backport>") is taken out again.
+pub fn commit_ids(log: &str) -> HashSet<String> {
+    fn sha_after<'a>(line: &'a str, marker: &str) -> Option<&'a str> {
+        let rest = &line[line.to_ascii_lowercase().find(marker)? + marker.len()..];
+        let sha = rest.trim_start().get(..40)?;
+        sha.bytes().all(|b| b.is_ascii_hexdigit()).then_some(sha)
+    }
+    let mut provides: Vec<(Option<String>, Vec<String>)> = Vec::new();
+    let mut reverted = HashSet::new();
+    for block in log.split('\0').filter(|b| !b.trim().is_empty()) {
+        let own = block
+            .lines()
+            .next()
+            .map(str::trim)
+            .filter(|l| l.len() == 40 && l.bytes().all(|b| b.is_ascii_hexdigit()))
+            .map(str::to_ascii_lowercase);
+        let mut refs: Vec<String> = own.iter().cloned().collect();
+        for l in block.lines() {
+            for m in ["cherry picked from commit", "upstream commit"] {
+                refs.extend(sha_after(l, m).map(str::to_ascii_lowercase));
+            }
+            let t = l.trim();
+            if let Some(rest) = t.strip_prefix("commit ")
+                && rest.len() > 40
+                && rest.is_char_boundary(40)
+                && rest[40..].trim_start().starts_with("upstream")
+                && rest[..40].bytes().all(|b| b.is_ascii_hexdigit())
+            {
+                refs.push(rest[..40].to_ascii_lowercase());
+            }
+            if let Some(s) = sha_after(l, "this reverts commit") {
+                reverted.insert(s.to_ascii_lowercase());
+            }
+        }
+        provides.push((own, refs));
+    }
+    provides
+        .into_iter()
+        .filter(|(own, _)| !own.as_ref().is_some_and(|o| reverted.contains(o)))
+        .flat_map(|(_, refs)| refs)
+        .collect()
 }
 
 pub fn load_kev(path: &Path) -> Result<HashSet<String>> {
@@ -371,6 +414,21 @@ mod tests {
     }
 
     #[test]
+    fn backport_markers_only() {
+        let a = "a".repeat(40);
+        let b = "b".repeat(40);
+        let c = "c".repeat(40);
+        let own = "1".repeat(40);
+        let log = format!(
+            "\0{own}\nnet: fix\n\ncommit {a} upstream.\n\nFixes: {b} (\"net: bug\")\nLink: https://x/{c}\n\
+             [ Upstream commit {c} ]\n"
+        );
+        let ids = commit_ids(&log);
+        assert!(ids.contains(&a) && ids.contains(&c) && ids.contains(&own));
+        assert!(!ids.contains(&b), "Fixes: names the buggy commit, not the fix");
+    }
+
+    #[test]
     fn cvss_scores() {
         assert_eq!(cvss3_base("CVSS:3.1/AV:L/AC:L/PR:N/UI:N/S:C/C:H/I:H/A:H"), Some(9.3));
         assert_eq!(cvss3_base("CVSS:3.1/AV:L/AC:L/PR:L/UI:N/S:U/C:H/I:H/A:H"), Some(7.8));
@@ -416,7 +474,14 @@ mod tests {
         // A backport in the tree names the mainline commit.
         let d = "d".repeat(40);
         std::fs::write(y.join("CVE-2026-1.sha1"), format!("{d}\n")).unwrap();
-        feeds.contained = commit_ids(&format!("ipv4: x\n\n(cherry picked from commit {d})\n"));
+        let e = "e".repeat(40);
+        feeds.contained = commit_ids(&format!("\0{e}\nipv4: x\n\n(cherry picked from commit {d})\n"));
         assert!(scan(t.path(), "7.0.14", &HashSet::new(), &feeds).unwrap().is_empty());
+        // ... unless that backport was reverted.
+        let f = "f".repeat(40);
+        feeds.contained = commit_ids(&format!(
+            "\0{f}\nRevert \"ipv4: x\"\n\nThis reverts commit {e}.\n\0{e}\nipv4: x\n\n(cherry picked from commit {d})\n"
+        ));
+        assert_eq!(scan(t.path(), "7.0.14", &HashSet::new(), &feeds).unwrap().len(), 1);
     }
 }

@@ -246,6 +246,8 @@ Solutions GmbH.
 - [Toolchains](docs/toolchains.md): compiler and snapshot values per kernel release
 - [APT repository](docs/apt-repository.md): publishing the agent package
 - [Catalog format](catalog/README.md): how CVE entries are written and reviewed
+- [Writing fixes](docs/writing-fixes.md): callbacks, shadow variables, states
+- [Kernel 7.0](docs/kernel-7.0.md): the experimental 7.0 build path
 - [Security policy](SECURITY.md)
 
 ## Repository layout

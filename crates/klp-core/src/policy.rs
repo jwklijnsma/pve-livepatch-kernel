@@ -170,6 +170,7 @@ mod tests {
             superseded_by_kernel: None,
             builder_image: None,
             catalog_commit: None,
+            states: vec![],
         }
     }
 

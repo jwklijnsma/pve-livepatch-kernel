@@ -26,6 +26,7 @@ patches:                           # most specific wins: package version, series
   "7.0": 0001-fix-7.0.patch          # backport for the Ubuntu-based 7.0 series
   "7.3.5-1": 0001-fix-7.3.5-1.patch
 functions: ["vmlinux:tcp_foo"]     # required for livepatchable: see below
+states: []                         # callbacks/shadow variables: docs/writing-fixes.md
 mitigation: ""                     # for mitigation-only
 tests:
   qemu_load: required

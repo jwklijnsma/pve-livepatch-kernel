@@ -13,7 +13,7 @@ require() { for c in "$@"; do command -v "$c" >/dev/null || die "missing tool: $
 
 # A repository URL without credentials (user:token@), for anything that is
 # written to logs or published.
-public_url() { printf '%s' "$1" | sed -E 's#://[^/@]*@#://#'; }
+public_url() { printf '%s' "$1" | sed -E 's#^([A-Za-z][A-Za-z0-9+.-]*://)[^/]*@#\1#'; }
 
 # Files written by an earlier, less trusted stage (the build container runs
 # kernel Makefiles and catalog patches) are only read if they are regular
