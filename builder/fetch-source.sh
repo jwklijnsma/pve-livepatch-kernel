@@ -92,7 +92,7 @@ if [ "$SERIES" = 7.0 ]; then
     DEPTH=2
   fi
   printf '%s %s\n' "$UB" "$DEPTH" > "$OUT/.hvpatch-base"
-  printf 'pve-kernel %s %s\nubuntu-kernel %s %s\n' "$REPO" "$WANT" "$UBUNTU" "$UB" > "$OUT/.hvpatch-source"
+  printf 'pve-kernel %s %s\nubuntu-kernel %s %s\n' "$(public_url "$REPO")" "$WANT" "$(public_url "$UBUNTU")" "$UB" > "$OUT/.hvpatch-source"
   printf '%s' "$TAG" > "$OUT/.hvpatch-tag"
   check_tree
   log "source for $KVER at $OUT ($(git -C "$OUT" rev-parse --short HEAD), experimental 7.0 path)"
@@ -131,6 +131,6 @@ git -C "$OUT" -c user.name=hvpatch -c user.email=hvpatch@localhost add -A
 git -C "$OUT" -c user.name=hvpatch -c user.email=hvpatch@localhost commit -qm "hvpatch: $TAG with debian/patches"
 printf '%s' "$TAG" > "$OUT/.hvpatch-tag"
 rm -f "$OUT/.hvpatch-base"
-printf 'proxmox-kernel %s %s (tag %s)\n' "$REPO" "$WANT" "$TAG" > "$OUT/.hvpatch-source"
+printf 'proxmox-kernel %s %s (tag %s)\n' "$(public_url "$REPO")" "$WANT" "$TAG" > "$OUT/.hvpatch-source"
 check_tree
 log "source for $KVER at $OUT ($(git -C "$OUT" rev-parse --short HEAD))"

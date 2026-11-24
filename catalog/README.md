@@ -75,3 +75,30 @@ rebase the later patch onto the earlier one.
 - A backport for a specific kernel is a separate patch with its own review.
 - v1 entries use no callbacks and no shadow variables. That keeps replacing a
   cumulative module by an older one safe.
+
+## Finding candidates
+
+```bash
+builder/cve-scan.sh 7.3.5-1-pve                       # by upstream version
+builder/cve-scan.sh 7.0.14-30-pve build/7.0.14-30-pve/src   # with the tree's backports
+```
+
+lists the kernel CVEs (from the kernel CNA's
+[vulns.git](https://git.kernel.org/pub/scm/linux/security/vulns.git)) that
+affect the kernel and are not in the catalog, with the CNA's CVSS score,
+CISA KEV (known exploited) and FIRST EPSS, and writes drafts to
+`catalog-drafts/` (ignored by git). Priorities:
+
+| | Meaning |
+| --- | --- |
+| P0 | known exploited, or CVSS ≥ 9 in code a guest reaches on a KVM host (KVM, vhost, vfio, virtio, tun/tap, host network path) |
+| P1 | CVSS ≥ 7, EPSS ≥ 10 %, or guest-reachable |
+| P2 | the rest |
+
+"Affected" comes from the CNA's version data (`.dyad`). For 7.0 pass the
+kernel tree: its Ubuntu base backports fixes without changing the upstream
+version, and the scan drops every fix whose mainline commit a backport names
+in its commit message. A draft is a starting point, not an entry: decide the
+class, write or pick the patch, list the functions, then move it to
+`catalog/` in a pull request.
+

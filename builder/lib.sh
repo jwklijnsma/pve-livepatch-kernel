@@ -11,6 +11,10 @@ series() { local v="${1%%-*}"; printf '%s' "${v%.*}"; }
 
 require() { for c in "$@"; do command -v "$c" >/dev/null || die "missing tool: $c"; done; }
 
+# A repository URL without credentials (user:token@), for anything that is
+# written to logs or published.
+public_url() { printf '%s' "$1" | sed -E 's#://[^/@]*@#://#'; }
+
 # Files written by an earlier, less trusted stage (the build container runs
 # kernel Makefiles and catalog patches) are only read if they are regular
 # files, not symlinks: a planted link to a key would otherwise be read in

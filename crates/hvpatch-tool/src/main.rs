@@ -1,6 +1,7 @@
 //! Build-side tooling. Used by the pipeline scripts in `builder/`.
 
 mod catalog;
+mod cvescan;
 mod gate;
 mod kconfig;
 
@@ -171,6 +172,42 @@ enum Cmd {
         ring: String,
         #[arg(long)]
         out: PathBuf,
+    },
+    /// List kernel CVEs that affect a Proxmox kernel and are not in the
+    /// catalog, by priority (P0 known exploited or critical and reachable
+    /// from a guest, P1 high or likely exploited or guest-reachable, P2).
+    CveScan {
+        /// Checkout of git.kernel.org/pub/scm/linux/security/vulns.git.
+        #[arg(long)]
+        vulns: PathBuf,
+        /// Proxmox kernel release, e.g. 7.3.5-1-pve.
+        #[arg(long)]
+        kernel: String,
+        /// Upstream version the kernel is based on (default: from the
+        /// release, 7.3.5-1-pve -> 7.3.5).
+        #[arg(long)]
+        upstream_version: Option<String>,
+        #[arg(long, default_value = "catalog")]
+        catalog: PathBuf,
+        /// CISA KEV catalog (known_exploited_vulnerabilities.json).
+        #[arg(long)]
+        kev: Option<PathBuf>,
+        /// FIRST EPSS scores (CSV: cve,epss,percentile).
+        #[arg(long)]
+        epss: Option<PathBuf>,
+        /// Commit messages of the kernel tree (`git log --format=%B`): fixes
+        /// whose mainline commit they name are already contained. Needed
+        /// for 7.0, whose Ubuntu base backports fixes.
+        #[arg(long)]
+        contained: Option<PathBuf>,
+        /// Only P0, or P0 and P1.
+        #[arg(long, value_parser = ["P0", "P1", "P2"], default_value = "P2")]
+        max_priority: String,
+        /// Write catalog entry drafts (meta.yaml) for the findings here.
+        #[arg(long)]
+        drafts: Option<PathBuf>,
+        #[arg(long)]
+        json: bool,
     },
     /// Add a module to the revocation list (created if missing; the
     /// sequence goes up). Sign the result with `sign` afterwards.
@@ -435,6 +472,62 @@ fn run(cli: Cli) -> Result<bool> {
             }
             m.ring = ring;
             write(&out, m.to_json_pretty().as_bytes())?;
+            Ok(true)
+        }
+        Cmd::CveScan { vulns, kernel, upstream_version, catalog, kev, epss, contained, max_priority, drafts, json } => {
+            let upstream = upstream_version
+                .unwrap_or_else(|| naming::package_version(&kernel).split('-').next().unwrap_or_default().to_owned());
+            let known: std::collections::HashSet<String> =
+                catalog::load(&catalog)?.into_iter().map(|l| l.entry.id).collect();
+            let feeds = cvescan::Feeds {
+                kev: kev.as_deref().map(cvescan::load_kev).transpose()?.unwrap_or_default(),
+                epss: epss.as_deref().map(cvescan::load_epss).transpose()?.unwrap_or_default(),
+                contained: match &contained {
+                    Some(p) => cvescan::commit_ids(&String::from_utf8_lossy(&read(p)?)),
+                    None => Default::default(),
+                },
+            };
+            let findings: Vec<_> = cvescan::scan(&vulns, &upstream, &known, &feeds)?
+                .into_iter()
+                .filter(|f| f.priority <= max_priority)
+                .collect();
+            if let Some(dir) = &drafts {
+                for f in &findings {
+                    let d = dir.join(&f.id);
+                    if d.exists() {
+                        continue;
+                    }
+                    std::fs::create_dir_all(&d)?;
+                    write(&d.join("meta.yaml"), cvescan::draft_meta(f).as_bytes())?;
+                }
+            }
+            if json {
+                println!("{}", serde_json::to_string_pretty(&findings)?);
+            } else {
+                for f in &findings {
+                    println!(
+                        "{} {:<16} {:>4} {:<3} {:<2} {}{}",
+                        f.priority,
+                        f.id,
+                        f.cvss.map(|c| format!("{c:.1}")).unwrap_or_else(|| "-".into()),
+                        if f.kev { "KEV" } else { "" },
+                        if f.hypervisor_relevant { "HV" } else { "" },
+                        f.title,
+                        f.fixed_upstream_stable
+                            .as_deref()
+                            .map(|v| format!(" (upstream stable {v})"))
+                            .unwrap_or_default()
+                    );
+                }
+                let count = |p: &str| findings.iter().filter(|f| f.priority == p).count();
+                eprintln!(
+                    "{kernel} (upstream {upstream}): {} not in the catalog: P0 {}, P1 {}, P2 {}",
+                    findings.len(),
+                    count("P0"),
+                    count("P1"),
+                    count("P2")
+                );
+            }
             Ok(true)
         }
         Cmd::Revoke { list, module, kernel, level, reason } => {

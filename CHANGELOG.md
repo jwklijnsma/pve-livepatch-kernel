@@ -51,6 +51,12 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`hvpatch-tool cve-scan` and `builder/cve-scan.sh`:** kernel CVEs that
+  affect a Proxmox kernel and are not in the catalog yet, from the kernel
+  CNA's vulns.git, with CVSS, CISA KEV and EPSS, prioritised P0–P2 for
+  hypervisors, with catalog drafts. For 7.0, backports in the kernel tree
+  are recognised by the mainline commit they name.
+
 - **7.0 kernel series (experimental):** `fetch-source.sh` prepares the
   Ubuntu-based tree from `pve-kernel.git` as Proxmox does (pinned
   pve-kernel commit, release checked against its Makefile) and adds the

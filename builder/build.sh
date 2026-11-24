@@ -123,7 +123,7 @@ hvpatch-tool gate-a --module "$OUT/$NAME.ko" --kernel "$KVER" --expected-name "$
 # and the scripts used to build it.
 log "source bundle"
 PATCHED=$(git -C "$TREE" rev-parse HEAD)
-ORIGIN=$(cat "$TREE/.hvpatch-source" 2>/dev/null || echo "unknown")
+ORIGIN=$(public_url "$(cat "$TREE/.hvpatch-source" 2>/dev/null || echo "unknown")")
 mkdir -p "$WORK/cache"
 KSRC="$WORK/cache/linux-$KVER-$PATCHED.tar.xz"
 if [ ! -s "$KSRC" ]; then
