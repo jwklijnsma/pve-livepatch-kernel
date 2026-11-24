@@ -6,6 +6,12 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed
+
+- Catalog review: one approval is required while the project has a single
+  maintainer (was two). Documented in CONTRIBUTING.md and
+  `catalog/README.md`; it goes back to two with a second maintainer.
+
 ## [0.2.0] - 2026-11-24
 
 ### Changed

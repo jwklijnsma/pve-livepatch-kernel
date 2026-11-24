@@ -65,7 +65,11 @@ rebase the later patch onto the earlier one.
 - Every entry arrives by pull request and names the upstream commit.
 - CI compares the patch with upstream via `git patch-id`
   (`hvpatch-tool lint --upstream <linux.git>`); deviations need a `reason`.
-- Two approvals, signed commits, protected main branch.
+- Two approvals are the goal. While the project has a single maintainer,
+  one review is required (and `lint` enforces one); entries name their
+  reviewer in `reviewed_by`. This goes back to two as soon as a second
+  maintainer joins.
+- Signed commits, protected main branch.
 - A backport for a specific kernel is a separate patch with its own review.
 - v1 entries use no callbacks and no shadow variables. That keeps replacing a
   cumulative module by an older one safe.

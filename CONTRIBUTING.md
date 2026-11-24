@@ -12,7 +12,10 @@ rules are stricter than usual.
 3. Classify honestly: `livepatchable` only for function-only changes that
    klp-build builds and the tests pass. Everything else is `needs-manual`,
    `not-livepatchable` or `mitigation-only`, and users see "reboot required".
-4. Two maintainer approvals are required. Commits must be signed.
+4. Two maintainer approvals are the rule. The project currently has one
+   maintainer, so for now one approval is required; this changes back as
+   soon as there is a second maintainer. Want to be one? Open an issue.
+   Commits must be signed.
 
 A backport for a specific kernel is a separate patch file with its own review.
 

@@ -93,6 +93,11 @@ pub fn load(catalog: &Path) -> Result<Vec<Loaded>> {
     Ok(out)
 }
 
+/// Reviewers a livepatchable entry needs. The project has one maintainer
+/// so far; this goes back to 2 as soon as there is a second one (see
+/// CONTRIBUTING.md).
+pub const MIN_REVIEWERS: usize = 1;
+
 /// Static lint for one entry (CI stage 0, before merge).
 pub fn lint(l: &Loaded) -> Vec<String> {
     let e = &l.entry;
@@ -126,8 +131,8 @@ pub fn lint(l: &Loaded) -> Vec<String> {
             if e.functions.is_empty() {
                 p.push("class livepatchable needs the reviewed list of patched functions (`functions`)".into());
             }
-            if e.reviewed_by.len() < 2 {
-                p.push(format!("class livepatchable needs two reviewers, has {}", e.reviewed_by.len()));
+            if e.reviewed_by.len() < MIN_REVIEWERS {
+                p.push(format!("class livepatchable needs {MIN_REVIEWERS} reviewer(s), has {}", e.reviewed_by.len()));
             }
         }
         Class::NeedsManual | Class::NotLivepatchable => {
