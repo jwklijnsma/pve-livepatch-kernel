@@ -63,6 +63,9 @@ pub struct Loaded {
 }
 
 pub fn load(catalog: &Path) -> Result<Vec<Loaded>> {
+    // Absolute paths: patch files are later handed to `git -C <tree>`, which
+    // would resolve a relative path against the tree, not the caller's cwd.
+    let catalog = &std::fs::canonicalize(catalog).with_context(|| format!("reading {}", catalog.display()))?;
     let mut out = Vec::new();
     let mut dirs: Vec<_> = std::fs::read_dir(catalog)
         .with_context(|| format!("reading {}", catalog.display()))?
@@ -271,34 +274,57 @@ fn is_commit_id(c: &str) -> bool {
 }
 
 /// Apply all patches one after another to a throwaway index built from
-/// the tree's HEAD (the working tree is not touched). `git apply --check`
-/// with several patches would check each against the original instead.
+/// the tree's HEAD. `git apply --check` with several patches would check
+/// each against the original instead. Index and new objects go to a
+/// temporary directory; the tree, including its object store, is only read,
+/// so this works on read-only trees too.
 fn check_cumulative(tree: &Path, r: &Resolved) -> Result<()> {
-    let index = std::env::temp_dir().join(format!("pve-klp-resolve-index-{}", std::process::id()));
+    let tmp =
+        tempfile::Builder::new().prefix("pve-klp-resolve-").tempdir().context("creating a temporary directory")?;
+    let out = Command::new("git").arg("-C").arg(tree).args(["rev-parse", "--absolute-git-dir"]).output()?;
+    if !out.status.success() {
+        bail!("{} is not a git tree: {}", tree.display(), String::from_utf8_lossy(&out.stderr).trim());
+    }
+    let objects = PathBuf::from(String::from_utf8_lossy(&out.stdout).trim()).join("objects");
     let git = |args: &[&std::ffi::OsStr]| {
-        Command::new("git").arg("-C").arg(tree).env("GIT_INDEX_FILE", &index).args(args).output()
+        Command::new("git")
+            .arg("-C")
+            .arg(tree)
+            .env("GIT_INDEX_FILE", tmp.path().join("index"))
+            .env("GIT_OBJECT_DIRECTORY", tmp.path().join("objects"))
+            .env("GIT_ALTERNATE_OBJECT_DIRECTORIES", &objects)
+            .args(args)
+            .output()
     };
-    let result = (|| -> Result<()> {
-        let out = git(&["read-tree".as_ref(), "HEAD".as_ref()]).context("running git read-tree")?;
-        if !out.status.success() {
-            bail!("git read-tree HEAD in {}: {}", tree.display(), String::from_utf8_lossy(&out.stderr).trim());
+    std::fs::create_dir_all(tmp.path().join("objects"))?;
+    let out = git(&["read-tree".as_ref(), "HEAD".as_ref()]).context("running git read-tree")?;
+    if !out.status.success() {
+        bail!(
+            "cannot check the patch order in {} (git read-tree HEAD failed): {}",
+            tree.display(),
+            String::from_utf8_lossy(&out.stderr).trim()
+        );
+    }
+    for (patch, fix) in r.patches.iter().zip(&r.fixes) {
+        let out = git(&["apply".as_ref(), "--cached".as_ref(), patch.as_os_str()]).context("running git apply")?;
+        if out.status.success() {
+            continue;
         }
-        for (patch, fix) in r.patches.iter().zip(&r.fixes) {
-            let out = git(&["apply".as_ref(), "--cached".as_ref(), patch.as_os_str()]).context("running git apply")?;
-            if !out.status.success() {
-                bail!(
-                    "{}: applies to {} on its own, but not after the patches before it in catalog order ({}):\n{}",
-                    fix.id,
-                    r.kernel,
-                    r.fixes.iter().map(|f| f.id.as_str()).collect::<Vec<_>>().join(", "),
-                    String::from_utf8_lossy(&out.stderr).trim()
-                );
-            }
+        let err = String::from_utf8_lossy(&out.stderr);
+        // Only a patch that does not fit is an ordering conflict; anything
+        // else (I/O, permissions) is a problem of this environment.
+        if err.contains("patch failed") || err.contains("does not apply") || err.contains("already exists") {
+            bail!(
+                "{}: applies to {} on its own, but not after the patches before it in catalog order ({}):\n{}",
+                fix.id,
+                r.kernel,
+                r.fixes.iter().map(|f| f.id.as_str()).collect::<Vec<_>>().join(", "),
+                err.trim()
+            );
         }
-        Ok(())
-    })();
-    let _ = std::fs::remove_file(&index);
-    result
+        bail!("cannot check the patch order in {} ({}): {}", tree.display(), fix.id, err.trim());
+    }
+    Ok(())
 }
 
 /// `git patch-id --stable` of some diff text.
@@ -422,26 +448,30 @@ reviewed_by: ["alice", "bob"]
         assert!(r.fixes.is_empty() && r.not_covered.is_empty());
     }
 
-    #[test]
-    fn patches_that_conflict_together_are_refused() {
-        let t = tempfile::tempdir().unwrap();
-        let tree = t.path().join("tree");
-        std::fs::create_dir_all(&tree).unwrap();
+    /// A git tree with f.c and g.c ("a b c") committed.
+    fn git_tree(tree: &Path) {
+        std::fs::create_dir_all(tree).unwrap();
         let git = |args: &[&str]| {
-            let st = Command::new("git").arg("-C").arg(&tree).args(args).output().unwrap();
+            let st = Command::new("git").arg("-C").arg(tree).args(args).output().unwrap();
             assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
         };
         git(&["init", "-q"]);
         std::fs::write(tree.join("f.c"), "a\nb\nc\n").unwrap();
-        git(&["add", "f.c"]);
+        std::fs::write(tree.join("g.c"), "a\nb\nc\n").unwrap();
+        git(&["add", "f.c", "g.c"]);
         git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
-        let cat = t.path().join("catalog");
-        for (id, new) in [("CVE-2026-0001", "x"), ("CVE-2026-0002", "y")] {
+    }
+
+    /// 0001 and 0002 change the same line of f.c; 0003 changes g.c.
+    fn conflict_catalog(cat: &Path) -> Vec<Loaded> {
+        for (id, file, new) in
+            [("CVE-2026-0001", "f.c", "x"), ("CVE-2026-0002", "f.c", "y"), ("CVE-2026-0003", "g.c", "z")]
+        {
             let d = cat.join(id);
             std::fs::create_dir_all(&d).unwrap();
             std::fs::write(
                 d.join("0001-fix.patch"),
-                format!("--- a/f.c\n+++ b/f.c\n@@ -1,3 +1,3 @@\n a\n-b\n+{new}\n c\n"),
+                format!("--- a/{file}\n+++ b/{file}\n@@ -1,3 +1,3 @@\n a\n-b\n+{new}\n c\n"),
             )
             .unwrap();
             std::fs::write(
@@ -454,16 +484,48 @@ reviewed_by: ["alice", "bob"]
             )
             .unwrap();
         }
-        let entries = load(&cat).unwrap();
+        load(cat).unwrap()
+    }
+
+    #[test]
+    fn patches_that_conflict_together_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let tree = t.path().join("tree");
+        git_tree(&tree);
+        let entries = conflict_catalog(&t.path().join("catalog"));
         // Each one applies alone ...
         for e in &entries {
             assert!(resolve(std::slice::from_ref(e), "7.3.5-1-pve", Some(&tree), false).is_ok());
         }
-        // ... but not both.
-        let err = resolve(&entries, "7.3.5-1-pve", Some(&tree), false).unwrap_err().to_string();
-        assert!(err.contains("CVE-2026-0002") && err.contains("not after the patches before it"), "{err}");
+        let conflicting = [entries[0].clone(), entries[1].clone()];
+        let compatible = [entries[0].clone(), entries[2].clone()];
+        assert!(resolve(&compatible, "7.3.5-1-pve", Some(&tree), false).is_ok());
+        // ... but 0001 and 0002 not together, and never with --allow-conflicts.
+        for allow in [false, true] {
+            let err = resolve(&conflicting, "7.3.5-1-pve", Some(&tree), allow).unwrap_err().to_string();
+            assert!(err.contains("CVE-2026-0002") && err.contains("not after the patches before it"), "{err}");
+        }
         // The working tree was not touched.
         assert_eq!(std::fs::read_to_string(tree.join("f.c")).unwrap(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn order_check_works_on_a_read_only_tree() {
+        let t = tempfile::tempdir().unwrap();
+        let tree = t.path().join("tree");
+        git_tree(&tree);
+        let entries = conflict_catalog(&t.path().join("catalog"));
+        let chmod =
+            |mode: &str| assert!(Command::new("chmod").args(["-R", mode]).arg(&tree).status().unwrap().success());
+        // Read-only before anything ran against it (e.g. a :ro mount), so the
+        // blobs the patches create are not in the tree's object store yet.
+        chmod("a-w");
+        let ok = resolve(&[entries[0].clone(), entries[2].clone()], "7.3.5-1-pve", Some(&tree), false);
+        let bad = resolve(&[entries[0].clone(), entries[1].clone()], "7.3.5-1-pve", Some(&tree), false);
+        chmod("u+w");
+        assert!(ok.is_ok(), "two compatible patches on a read-only tree: {ok:?}");
+        let err = bad.unwrap_err().to_string();
+        assert!(err.contains("not after the patches before it"), "{err}");
     }
 
     #[test]

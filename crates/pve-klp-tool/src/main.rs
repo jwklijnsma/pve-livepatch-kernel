@@ -78,7 +78,9 @@ enum Cmd {
         /// Patched kernel source tree to test-apply patches against.
         #[arg(long)]
         tree: Option<PathBuf>,
-        /// Report non-applying patches as "not covered" instead of failing.
+        /// Report patches that do not apply to this kernel as "not covered"
+        /// instead of failing. Patches that conflict with each other are a
+        /// catalog defect and always fail.
         #[arg(long)]
         allow_conflicts: bool,
         #[arg(long)]

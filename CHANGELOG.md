@@ -6,6 +6,29 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.6] - 2026-11-24
+
+Build-side fixes from the sixth real-host round, which confirmed 0.1.5 and
+ran `resolve --tree` with the first real catalog entries (PR #4) against the
+Proxmox 7.3.4-1 and 7.3.5-1 trees. The agent is unchanged.
+
+### Fixed
+
+- `resolve --tree` with a relative `--catalog` (including the default
+  `catalog`) reported every patch as "does not apply": git resolved the
+  patch path against the tree. Catalog paths are now absolute.
+- The in-order check wrote into the tree's `.git` and failed on read-only
+  trees (`:ro` mounts, shared caches), reported as an ordering conflict.
+  Index and new objects now go to a temporary directory and the tree's
+  objects are only read; I/O problems are reported as such, not as
+  conflicts.
+
+### Docs
+
+- `--allow-conflicts` only covers patches that do not fit the kernel.
+  Patches that conflict with each other are a catalog defect and always
+  fail (help text and `catalog/README.md`).
+
 ## [0.1.5] - 2026-11-24
 
 The fifth real-host round confirmed 0.1.4: a non-interactive upgrade from
@@ -210,7 +233,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.5...HEAD
+[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.6...HEAD
+[0.1.6]: https://github.com/prepaid-host/pve-klp/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/prepaid-host/pve-klp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/prepaid-host/pve-klp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...v0.1.3

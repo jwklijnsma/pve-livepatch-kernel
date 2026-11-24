@@ -231,3 +231,39 @@ fn check_manifest_refuses_an_edited_manifest() {
     let (ok, out) = check();
     assert!(!ok && out.contains("build-id"), "{out}");
 }
+
+#[test]
+fn resolve_with_a_relative_catalog_and_a_tree() {
+    let t = tempfile::tempdir().unwrap();
+    let tree = t.path().join("tree");
+    std::fs::create_dir_all(&tree).unwrap();
+    let git = |args: &[&str]| {
+        let st = Command::new("git").arg("-C").arg(&tree).args(args).output().unwrap();
+        assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+    };
+    git(&["init", "-q"]);
+    std::fs::write(tree.join("f.c"), "a\nb\nc\n").unwrap();
+    git(&["add", "f.c"]);
+    git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
+    let d = t.path().join("catalog-734/CVE-2026-0001");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join("0001-fix.patch"), "--- a/f.c\n+++ b/f.c\n@@ -1,3 +1,3 @@\n a\n-b\n+x\n c\n").unwrap();
+    std::fs::write(
+        d.join("meta.yaml"),
+        "id: CVE-2026-0001\ntitle: t\nupstream_commits: [\"0123456789abcdef\"]\nseverity: high\nclass: livepatchable\n\
+         patches:\n  default: 0001-fix.patch\nfunctions: [\"vmlinux:f\"]\nreviewed_by: [\"a\", \"b\"]\n",
+    )
+    .unwrap();
+    // Relative --catalog, run from its parent directory, tree elsewhere.
+    let out = Command::new(env!("CARGO_BIN_EXE_pve-klp-tool"))
+        .current_dir(t.path())
+        .args(["resolve", "--catalog", "catalog-734", "--kernel", "7.3.4-1-pve", "--tree"])
+        .arg(&tree)
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(out.status.success(), "{}{}", stdout, String::from_utf8_lossy(&out.stderr));
+    let v: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(v["fixes"][0]["id"], "CVE-2026-0001");
+    assert!(v["patches"][0].as_str().unwrap().starts_with('/'), "patch paths are absolute");
+}

@@ -49,6 +49,17 @@ built module: the union over all resolved entries must equal the module's
 changed functions exactly. A function the module patches without review, or
 a reviewed function the module does not patch, stops the build.
 
+## Patch order
+
+The patches of all entries a kernel needs go into one cumulative module,
+applied in catalog order (sorted by CVE id). `pve-klp-tool resolve --tree`
+checks each patch on its own and then all of them one after another; it only
+reads the tree, so read-only trees work. A patch that does not apply to a
+kernel is a kernel mismatch (add a backport, or `--allow-conflicts` to report
+it as "not covered"). Two catalog patches that conflict with each other are
+a catalog defect and always fail, with or without `--allow-conflicts`:
+rebase the later patch onto the earlier one.
+
 ## Review rules
 
 - Every entry arrives by pull request and names the upstream commit.

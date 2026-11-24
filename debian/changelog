@@ -1,3 +1,10 @@
+pve-klp (0.1.6-1) trixie; urgency=medium
+
+  * Build side only: resolve works with relative catalog paths and on
+    read-only trees. No agent changes.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Tue, 24 Nov 2026 07:06:10 +0000
+
 pve-klp (0.1.5-1) trixie; urgency=medium
 
   * Load errors only quote kernel log lines that concern the module.
