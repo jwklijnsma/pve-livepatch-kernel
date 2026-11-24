@@ -164,6 +164,14 @@ jobs:
         include: ${{ fromJSON(needs.plan.outputs.matrix) }}
     name: build ${{ matrix.kver }} level ${{ matrix.level }}
     steps:
+      - name: signing secrets present
+        env:
+          KLP_MODULE_KEY: ${{ secrets.KLP_MODULE_KEY }}
+          KLP_MODULE_CERT: ${{ secrets.KLP_MODULE_CERT }}
+          KLP_MANIFEST_KEY: ${{ secrets.KLP_MANIFEST_KEY }}
+        run: |
+          [ -n "$KLP_MODULE_KEY" ] && [ -n "$KLP_MODULE_CERT" ] && [ -n "$KLP_MANIFEST_KEY" ] \
+            || { echo "::error::secrets KLP_MODULE_KEY, KLP_MODULE_CERT and KLP_MANIFEST_KEY are needed: run builder/ci-setup.sh"; exit 1; }
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ needs.plan.outputs.sha }}

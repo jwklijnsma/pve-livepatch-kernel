@@ -4,10 +4,16 @@ name: release
 # binary and attach them, with checksums, to a GitHub release. Tags with a
 # suffix (v0.2.0-rc1) are marked pre-release; GitHub's "latest" link, which
 # the README's quick start uses, skips those.
+#
+# Fork: a push to main that adds a new version to debian/changelog releases
+# that version too (tag v<version>, created here) when the tag does not
+# exist yet.
 
 on:
   push:
     tags: ["v*"]
+    branches: [main]
+    paths: [debian/changelog, .github/workflows/release.yml]
   # Dry run from the Actions tab: builds and checks everything, publishes
   # nothing.
   workflow_dispatch:
@@ -16,17 +22,43 @@ permissions:
   contents: read
 
 jobs:
+  version:
+    runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      release: ${{ steps.v.outputs.release }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - id: v
+        run: |
+          v=$(sed -n '1s/^[^ ]* (\([^)]*\)).*/\1/p' debian/changelog | sed 's/-[^-]*$//')
+          release=false
+          case "$GITHUB_REF" in
+            refs/tags/v*) tag="$GITHUB_REF_NAME"; release=true ;;
+            refs/heads/main)
+              tag="v$v"
+              if [ "$GITHUB_EVENT_NAME" = push ] && ! git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null; then
+                release=true
+              fi ;;
+            *) tag="v$v" ;;
+          esac
+          echo "version $v, tag $tag, release $release"
+          { echo "tag=$tag"; echo "release=$release"; } >> "$GITHUB_OUTPUT"
+
   deb:
+    needs: version
     runs-on: ubuntu-24.04
     container: debian:trixie
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: apt-get update && apt-get install -y build-essential debhelper ca-certificates dpkg-dev rustup
       - name: version matches tag
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.version.outputs.release == 'true'
+        env:
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
           v="$(dpkg-parsechangelog -S Version | sed 's/-[^-]*$//')"
-          [ "v$v" = "${GITHUB_REF_NAME}" ] || { echo "debian/changelog has $v, tag is ${GITHUB_REF_NAME}"; exit 1; }
+          [ "v$v" = "$TAG" ] || { echo "debian/changelog has $v, tag is $TAG"; exit 1; }
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: PATH="$HOME/.cargo/bin:$PATH" dpkg-buildpackage -us -uc -b -d
       - run: mkdir -p dist && mv ../hvpatch_*.deb dist/
@@ -36,6 +68,7 @@ jobs:
           path: dist/*.deb
 
   static:
+    needs: version
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -52,8 +85,10 @@ jobs:
           path: dist/*
 
   publish:
-    needs: [deb, static]
+    needs: [version, deb, static]
     runs-on: ubuntu-24.04
+    env:
+      TAG: ${{ needs.version.outputs.tag }}
     permissions:
       contents: write
       id-token: write
@@ -78,17 +113,17 @@ jobs:
       - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: build provenance attestation
         id: provenance
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.version.outputs.release == 'true'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
       - name: provenance bundle as a release asset (offline verification)
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.version.outputs.release == 'true'
         env:
           BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
         run: cp "$BUNDLE" dist/hvpatch.intoto.jsonl
       - name: SBOM attestation for the binaries and the package
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.version.outputs.release == 'true'
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: |
@@ -98,8 +133,7 @@ jobs:
           sbom-path: dist/hvpatch.cdx.json
       - name: release notes from CHANGELOG.md
         run: |
-          v="${GITHUB_REF_NAME#v}"
-          case "$GITHUB_REF" in refs/tags/v*) ;; *) v="$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -n1)" ;; esac
+          v="${TAG#v}"
           awk -v v="$v" 'index($0, "## [" v "]") == 1 {on=1; next} on && /^## \[/ {exit} on && /^\[[^]]+\]: http/ {next} on' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
           cat >> notes.md <<NOTES
@@ -107,7 +141,7 @@ jobs:
           ### Install
 
           \`\`\`bash
-          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${GITHUB_REF_NAME}/hvpatch_amd64.deb
+          wget https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/hvpatch_amd64.deb
           apt install ./hvpatch_amd64.deb
           hvpatch setup --repository <your repository> --key <manifest key>
           \`\`\`
@@ -125,11 +159,13 @@ jobs:
           NOTES
           cat notes.md
       - name: create release
-        if: startsWith(github.ref, 'refs/tags/v')
+        if: needs.version.outputs.release == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           flags=()
-          case "${GITHUB_REF_NAME}" in *-*) flags+=(--prerelease) ;; esac
-          gh release create "${GITHUB_REF_NAME}" dist/* --title "hvpatch ${GITHUB_REF_NAME#v}" \
-            --notes-file notes.md --verify-tag "${flags[@]}"
+          case "${TAG}" in *-*) flags+=(--prerelease) ;; esac
+          # A tag push brings its tag; a version bump on main creates it here.
+          case "$GITHUB_REF" in refs/tags/*) flags+=(--verify-tag) ;; *) flags+=(--target "$GITHUB_SHA") ;; esac
+          gh release create "${TAG}" dist/* --title "pve-livepatch-kernel (hvpatch) ${TAG#v}" \
+            --notes-file notes.md "${flags[@]}"
