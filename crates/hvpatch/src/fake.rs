@@ -50,6 +50,8 @@ pub struct FakeState {
     pub blockers: Vec<BlockingTask>,
     /// Functions with kprobes/BPF attached (see KernelOps::traced_functions).
     pub traced: Vec<String>,
+    /// Loaded patches report `replace = 0` (built with --no-replace).
+    pub no_replace: bool,
     /// Chronological record of mutating calls, for assertions.
     pub calls: Vec<String>,
     pub slept: Duration,
@@ -80,6 +82,7 @@ impl FakeKernel {
                 functions_on_load: vec![("vmlinux:tcp_fix_me,1".into(), true)],
                 blockers: vec![],
                 traced: vec![],
+                no_replace: false,
                 calls: vec![],
                 slept: Duration::ZERO,
             }),
@@ -197,6 +200,11 @@ impl KernelOps for FakeKernel {
             enabled: p.enabled,
             transition: p.transition,
         }))
+    }
+
+    fn patch_replaces(&self, name: &str) -> Result<Option<bool>> {
+        let st = self.st.borrow();
+        Ok(st.patches.iter().find(|p| p.name == name).map(|_| !st.no_replace))
     }
 
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {

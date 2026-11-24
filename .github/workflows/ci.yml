@@ -31,12 +31,25 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: rustup toolchain install stable --profile minimal && rustup default stable
       - run: cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog
+      - name: fetch the upstream commits named in the catalog
+        run: |
+          git init -q upstream
+          for c in $(sed -n 's/^upstream_commits:.*\[\(.*\)\].*/\1/p' catalog/*/meta.yaml | tr -d '" ' | tr ',' '\n' | sort -u); do
+            for r in https://github.com/torvalds/linux.git https://github.com/gregkh/linux.git; do
+              git -C upstream fetch -q --depth 2 "$r" "$c" 2>/dev/null && continue 2
+            done
+            echo "::error::upstream commit $c not found in torvalds/linux or the stable tree"
+            exit 1
+          done
+      - name: compare catalog patches with upstream (git patch-id)
+        run: cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog --upstream upstream
 
   shell:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck -x -S warning builder/*.sh
+      - run: shellcheck -s sh debian/hvpatch.postinst debian/hvpatch.postrm
 
   deb:
     runs-on: ubuntu-24.04

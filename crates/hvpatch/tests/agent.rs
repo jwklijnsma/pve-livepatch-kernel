@@ -893,3 +893,15 @@ fn cache_keeps_only_recent_levels() {
     levels.sort();
     assert_eq!(levels, vec!["3", "4", "5"]);
 }
+
+#[test]
+fn module_without_atomic_replace_is_backed_out() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().no_replace = true;
+    let a = env.agent(k);
+    let e = a.apply(&explicit()).unwrap_err();
+    assert!(e.to_string().contains("without atomic replace"), "{e}");
+    assert!(a.kernel.loaded().is_empty());
+}

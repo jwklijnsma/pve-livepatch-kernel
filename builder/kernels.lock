@@ -1,0 +1,8 @@
+# Reviewed Proxmox kernel source commits. fetch-source.sh refuses to build a
+# kernel release that is not listed here, or whose tag points elsewhere.
+#
+# Adding a release: run builder/run.sh once; it stops and prints the line to
+# add (release, tag, commit). Check the commit against git.proxmox.com and
+# the Proxmox package changelog, then add it here in a reviewed commit.
+#
+# <kernel release>  <commit sha of the tag, before debian/patches>

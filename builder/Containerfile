@@ -35,7 +35,7 @@ RUN apt-get update \
       build-essential gcc-14 binutils bc bison flex cpio kmod rsync gawk \
       libelf-dev libssl-dev libxxhash-dev libdw-dev dwarves zstd xz-utils \
       git git-buildpackage quilt devscripts ca-certificates curl gnupg python3 \
-      qemu-system-x86 busybox-static \
+      qemu-system-x86 busybox-static openssl \
  && apt-get install -y --no-install-recommends -t trixie-backports \
       rustc rust-src rustfmt bindgen \
  && rm -rf /var/lib/apt/lists/*
@@ -51,6 +51,16 @@ RUN curl -fsSL "$PVE_KEYRING_URL" -o /usr/share/keyrings/proxmox-archive-keyring
  && printf 'deb [signed-by=/usr/share/keyrings/proxmox-archive-keyring.gpg] http://download.proxmox.com/debian/pve trixie %s\n' "$PVE_COMPONENT" \
       > /etc/apt/sources.list.d/pve.list \
  && printf 'Package: *\nPin: origin download.proxmox.com\nPin-Priority: 100\n' > /etc/apt/preferences.d/pve
+
+# Module signing uses Debian's sign-file, not the one built from the kernel
+# tree: the signing step must not run code that came with the tree or the
+# catalog patches. Only the binary is extracted; installing the package
+# would pull in another pahole and move the pinned toolchain.
+ARG KBUILD_PKG=linux-kbuild-6.12.107+deb13
+RUN cd /tmp && apt-get update && apt-get download "$KBUILD_PKG" \
+ && dpkg-deb -x ./*.deb /tmp/kbuild \
+ && install -m 0755 /tmp/kbuild/usr/lib/"$KBUILD_PKG"/scripts/sign-file /usr/local/bin/kernel-sign-file \
+ && rm -rf /tmp/kbuild ./*.deb /var/lib/apt/lists/*
 
 COPY hvpatch-tool /usr/local/bin/hvpatch-tool
 COPY *.sh /opt/hvpatch/builder/

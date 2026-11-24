@@ -26,6 +26,10 @@ else
   ln -sfn "$R/lib/modules/$KVER" "$OUT/modules"
 fi
 cp "$R/boot/vmlinuz-$KVER" "$OUT/vmlinuz"
+# Gate A and the QEMU stage read the modules as ELF: unpack compressed ones.
+find -L "$OUT/modules/" -name '*.ko.zst' -exec zstd -qd --rm {} \;
+find -L "$OUT/modules/" -name '*.ko.xz' -exec xz -d {} \;
+find -L "$OUT/modules/" -name '*.ko.gz' -exec gzip -d {} \;
 
 # vmlinux build-id: the x86 bzImage payload is a stripped ELF that keeps
 # .notes. Cross-checked against /sys/kernel/notes in the QEMU stage.

@@ -760,6 +760,12 @@ impl<K: KernelOps> Agent<K> {
             other => return Err(format!("unexpected patch state after transition: {other:?}")),
         }
 
+        // Levels replace each other; a module built without atomic replace
+        // would stack instead and break restore and rollback.
+        if self.kernel.patch_replaces(name).map_err(|e| e.to_string())? == Some(false) {
+            return Err("the module was built without atomic replace (klp-build --no-replace)".into());
+        }
+
         // Every function the manifest promises must show up in sysfs.
         let present: Vec<String> = self
             .kernel

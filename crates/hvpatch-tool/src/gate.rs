@@ -133,7 +133,13 @@ fn index_modules(dir: &Path, idx: &mut HashMap<String, PathBuf>) -> Result<()> {
 
 fn check_symbol(sh: &mut Shipped, object: &str, name: &str, sympos: u32, what: &str, r: &mut Report) -> Result<()> {
     let Some(counts) = sh.counts(object)? else {
-        r.warnings.push(format!("{what} {object}:{name}: shipped module {object} not available, not checked"));
+        // With the shipped modules at hand, a missing one is a real problem
+        // (wrong object name, or compressed modules not unpacked).
+        if sh.modules_dir.is_some() {
+            r.errors.push(format!("{what} {object}:{name}: module {object} is not among the shipped modules"));
+        } else {
+            r.warnings.push(format!("{what} {object}:{name}: no shipped modules given, not checked"));
+        }
         return Ok(());
     };
     let n = counts.get(name).copied().unwrap_or(0);

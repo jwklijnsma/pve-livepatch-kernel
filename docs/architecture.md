@@ -14,59 +14,55 @@ ever compiled on a hypervisor.
 
 ## Build pipeline
 
-For each supported kernel release (default: the newest three of the 7.3
-series):
+For each supported kernel release (`builder/run.sh <kver> <level>`):
 
-1. **Shipped artifacts.** Download `proxmox-kernel-<kver>` and
-   `proxmox-headers-<kver>` and extract `config`, `System.map`,
-   `Module.symvers`, the in-tree modules and the vmlinux build-id
-   (`fetch-shipped.sh`).
-2. **Source.** `proxmox-kernel.git`, tag `proxmox/<pkgver>`, with
-   `debian/patches` applied (`fetch-source.sh`). The 7.3 series is not in
-   `pve-kernel.git`.
-3. **Config and toolchain gate.** Copy the shipped config into the tree, run
-   `make olddefconfig`, and compare byte for byte with the shipped config
-   (`hvpatch-tool config-check`). The config records the compiler, assembler,
-   linker, pahole and rustc versions, so this also pins the toolchain. Any
-   difference aborts the build. `make kernelrelease` must equal `<kver>`.
-4. **Catalog.** `hvpatch-tool resolve` picks the entries the kernel still
-   needs. Each patch is test-applied: applies → included; applies in reverse →
-   already contained; neither → hard error (backport needed). Nothing is
-   dropped silently.
-5. **Build.** `scripts/livepatch/klp-build -T -o klp_hvp_<tag>_p<N>.ko
-   <patches…>`. The original build is reused with `--short-circuit=2`.
+1. **Shipped artifacts** (`fetch-shipped.sh`): `proxmox-kernel-<kver>` and
+   `proxmox-headers-<kver>`; config, System.map, Module.symvers, the
+   in-tree modules (unpacked if compressed), vmlinuz and the vmlinux
+   build-id.
+2. **Source** (`fetch-source.sh`): `proxmox-kernel.git`, tag
+   `proxmox/<pkgver>`, which must resolve to the commit reviewed in
+   `builder/kernels.lock`; Proxmox's patch queue applied. A reused tree must
+   still be based on that commit and clean.
+3. **Config and toolchain gate:** the shipped config is copied into the
+   tree, `make olddefconfig` must not change it (this pins gcc, binutils,
+   pahole, rustc/LLVM), and `make kernelrelease` must equal `<kver>`.
+4. **Catalog** (`hvpatch-tool resolve`): each patch is test-applied
+   (applies, already contained, or a hard error), then all of them one
+   after another in catalog order on a throwaway index. "Already
+   contained" must agree with the entry's `fixed_in_pve`.
+5. **Build:** `klp-build`, reusing the original build when its stamp
+   (config, toolchain, tree, build identity) matches.
 6. **Gate A** (`hvpatch-tool gate-a`) against the shipped artifacts:
-   - `.modinfo`: `livepatch=Y`, vermagic release, module name;
-   - modversion CRCs of all imported symbols against `Module.symvers`;
-   - every livepatch relocation symbol `.klp.sym.<obj>.<sym>,<pos>` exists in
-     the shipped `System.map` or the shipped module, and its position
-     resolves (unique when 0);
-   - every patched function from `objtool klp diff` exists under exactly
-     that name;
-   - the changed functions equal the union of the reviewed `functions` of
-     the resolved catalog entries, in both directions.
-7. **Sign module** with `scripts/sign-file`.
-8. **Manifest** (`hvpatch-tool manifest`), unsigned until the QEMU stage
-   passed.
-9. **QEMU stage** (`qemu-test.sh`): boot the unmodified shipped kernel,
-   load, wait for the transition, compare the functions in sysfs with the
-   diff, replace the previous level, disable, unload, load again, check the
-   kernel log. Read `/sys/kernel/notes` there and compare it with the
-   build-id in the manifest. On success it writes `out/qemu.ok` with the
-   module's SHA-256.
-10. **Sign manifest and publish** to ring `canary` (`sign-manifest.sh`). It
-    refuses without a `qemu.ok` for exactly this module.
-    Promotion to `early` and `stable` re-issues a signed manifest with the
-    new ring (`hvpatch-tool promote`).
+   modinfo, modversion CRCs, every livepatch relocation symbol and patched
+   function in the shipped System.map or module (a missing shipped module is
+   an error), and the changed functions equal the reviewed catalog lists.
+7. **Source bundle** for the GPL: patches, kernel tarball, config,
+   toolchain, scripts.
+8. **Sign** (`sign-module.sh`, separate container without tree, catalog or
+   network): Debian's `sign-file`, signature verified against the
+   certificate with openssl, manifest written.
+9. **QEMU stage** (`qemu-test.sh`, separate container without keys or
+   network): reproducers before/with/after/again, target modules loaded
+   after the patch, `replace=1`, patch/unpatch cycles under load, kernel
+   log, build-id. Writes `qemu.ok` with the module hash.
+10. **Publish** (`publish.sh`) to `canary`; **promote** (`promote.sh`) what
+    the ring below serves. Both sign the manifest and switch the ring
+    symlink atomically; published files are never overwritten.
 
 ## Repository layout
 
 ```
-v1/<kver>/<module>.ko
-v1/<kver>/<ring>/manifest.json
-v1/<kver>/<ring>/manifest.json.minisig
-v1/<kver>/build.log  functions.txt  gate-a.txt  resolved.json
+v1/<kver>/<module>.ko                          signed module, never overwritten
+v1/<kver>/<module>.source.tar.gz               corresponding source (GPL)
+v1/<kver>/source/linux-<kver>-<sha>.tar.xz     kernel source, once per commit
+v1/<kver>/<level>/                             build.log, functions, Gate A, QEMU log
+v1/<kver>/<ring> -> <ring>.versions/<level>-<time>/
+                    manifest.json, manifest.json.minisig
 ```
+
+Agents read `v1/<kver>/<ring>/manifest.json`; the symlink makes manifest and
+signature change together.
 
 ## Manifest
 

@@ -170,6 +170,10 @@ pub struct Resolved {
     pub not_covered: Vec<NotCovered>,
     /// Entries left out on purpose, with the reason (for the build log).
     pub skipped: Vec<(String, String)>,
+    /// Reproducer scripts of the included fixes (CVE id, absolute path), run
+    /// by the QEMU stage before and after the livepatch.
+    #[serde(default)]
+    pub reproducers: Vec<(String, PathBuf)>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -248,6 +252,17 @@ pub fn resolve(
             match applies(tree, &patch)? {
                 Applies::Yes => {}
                 Applies::AlreadyContained => {
+                    // Only plausible if the catalog agrees that this kernel
+                    // already has the fix; otherwise a dirty tree or a
+                    // coincidental reverse match would silently drop it.
+                    if e.fixed_in_pve.as_deref().is_some_and(|f| cmp_version(pkg, f).is_lt()) {
+                        bail!(
+                            "{}: the patch applies in reverse to {kernel_release}, but fixed_in_pve says {} \
+                             (later). Check the tree is clean and the entry is right",
+                            e.id,
+                            e.fixed_in_pve.as_deref().unwrap_or_default()
+                        );
+                    }
                     r.skipped.push((e.id.clone(), "patch applies in reverse: already contained in this kernel".into()));
                     continue;
                 }
@@ -263,6 +278,9 @@ pub fn resolve(
         }
         r.patches.push(patch);
         r.fixes.push(Fix { id: e.id.clone(), title: Some(e.title.clone()), functions: e.functions.clone() });
+        if let Some(rep) = e.tests.get("reproducer").filter(|v| v.starts_with("tests/")) {
+            r.reproducers.push((e.id.clone(), l.dir.join(rep)));
+        }
     }
     // Each patch applies on its own; klp-build applies them all, in this
     // order. Two fixes in the same function can still conflict together.
@@ -512,6 +530,32 @@ reviewed_by: ["alice", "bob"]
         }
         // The working tree was not touched.
         assert_eq!(std::fs::read_to_string(tree.join("f.c")).unwrap(), "a\nb\nc\n");
+    }
+
+    #[test]
+    fn already_contained_must_agree_with_fixed_in_pve() {
+        let t = tempfile::tempdir().unwrap();
+        let tree = t.path().join("tree");
+        git_tree(&tree);
+        // The tree already has the fix: f.c reads "a x c".
+        std::fs::write(tree.join("f.c"), "a\nx\nc\n").unwrap();
+        let st = Command::new("git")
+            .arg("-C")
+            .arg(&tree)
+            .args(["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qam", "fix"])
+            .output()
+            .unwrap();
+        assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+        let entries = conflict_catalog(&t.path().join("catalog"));
+        let first = &entries[..1];
+        // No fixed_in_pve: plausible, skipped.
+        let r = resolve(first, "7.3.5-1-pve", Some(&tree), false).unwrap();
+        assert!(r.fixes.is_empty() && r.skipped.len() == 1);
+        // fixed_in_pve later than this kernel contradicts the tree.
+        let mut e = first[0].clone();
+        e.entry.fixed_in_pve = Some("7.3.9-1".into());
+        let err = resolve(&[e], "7.3.5-1-pve", Some(&tree), false).unwrap_err().to_string();
+        assert!(err.contains("applies in reverse") && err.contains("7.3.9-1"), "{err}");
     }
 
     #[test]

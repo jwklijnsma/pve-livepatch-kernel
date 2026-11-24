@@ -92,6 +92,14 @@ impl KernelOps for LinuxKernel {
         Ok(Some(PatchInfo { name: name.to_owned(), enabled, transition }))
     }
 
+    fn patch_replaces(&self, name: &str) -> Result<Option<bool>> {
+        match fs::read_to_string(self.lp_dir(name).join("replace")) {
+            Ok(s) => Ok(Some(s.trim() == "1")),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(e) => Err(e).context("reading replace"),
+        }
+    }
+
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<()> {
         let p = self.lp_dir(name).join("enabled");
         fs::write(&p, if enabled { "1" } else { "0" }).with_context(|| format!("writing {}", p.display()))

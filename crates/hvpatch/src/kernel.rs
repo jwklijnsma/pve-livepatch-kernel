@@ -110,6 +110,9 @@ pub trait KernelOps {
     /// `None` once the patch is gone from sysfs.
     fn patch(&self, name: &str) -> Result<Option<PatchInfo>>;
     fn set_enabled(&self, name: &str, enabled: bool) -> Result<()>;
+    /// `/sys/kernel/livepatch/<name>/replace`: whether the patch replaces
+    /// all others when it is enabled (atomic replace). `None` if unknown.
+    fn patch_replaces(&self, name: &str) -> Result<Option<bool>>;
     /// Patched functions as `object:function,sympos` and whether the
     /// object is currently patched (`false` for modules not loaded).
     fn patched_functions(&self, name: &str) -> Result<Vec<(String, bool)>>;

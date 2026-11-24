@@ -6,6 +6,37 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Changed (build side)
+
+- **Three containers in `run.sh`:** build (repository read-only, no keys),
+  sign (only the key and the output, no kernel tree, no catalog, no
+  network) and QEMU test (no keys, no network). A malicious catalog patch or
+  kernel Makefile can no longer reach the signing key or change the build
+  scripts.
+- **Module signing** with Debian's `sign-file` instead of the one built
+  from the kernel tree, and the signature is verified against the
+  certificate with openssl before anything is published.
+- **Kernel source pinned** in `builder/kernels.lock`; a moved tag or a
+  reused tree that is not clean stops the build.
+- **Publishing:** `publish.sh` (fresh builds, ring canary) and `promote.sh`
+  (promote exactly what the ring below serves, after verifying its
+  signature and the module hash) replace `sign-manifest.sh`. Published
+  files are never overwritten, levels only go up per ring, and each ring is
+  a symlink switched atomically, so readers never see a manifest without
+  its signature.
+- **QEMU stage:** runs the catalog reproducers before, with, after and
+  again with the patch; loads the target modules after the livepatch and
+  checks they are patched; checks `replace=1`; patch/unpatch cycles under
+  load.
+- **GPL:** every build has a corresponding-source bundle (patches, kernel
+  tarball, config, toolchain, scripts), published next to the module.
+- `resolve` refuses "already contained" when it contradicts the entry's
+  `fixed_in_pve`; Gate A treats a missing shipped module as an error;
+  compressed shipped modules are unpacked; `build.sh` starts from an empty
+  output directory and marks a dirty catalog.
+- CI compares the catalog patches with the upstream commits (`git
+  patch-id`), as documented.
+
 ## [0.2.1] - 2026-11-24
 
 From an independent review of the whole code base. It found no way to get

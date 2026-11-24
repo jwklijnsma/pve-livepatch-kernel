@@ -139,6 +139,16 @@ enum Cmd {
         #[arg(long)]
         out: PathBuf,
     },
+    /// Split a signed module into content and PKCS#7 signature (to verify
+    /// it against the certificate with openssl).
+    SplitModuleSig {
+        #[arg(long)]
+        module: PathBuf,
+        #[arg(long)]
+        content: PathBuf,
+        #[arg(long)]
+        pkcs7: PathBuf,
+    },
     /// Check a manifest against the build output before signing it.
     CheckManifest {
         #[arg(long)]
@@ -375,6 +385,13 @@ fn run(cli: Cli) -> Result<bool> {
             };
             m.validate()?;
             write(&out, m.to_json_pretty().as_bytes())?;
+            Ok(true)
+        }
+        Cmd::SplitModuleSig { module, content, pkcs7 } => {
+            let bytes = read(&module)?;
+            let s = klp_core::elf::split_module_signature(&bytes)?;
+            write(&content, s.content)?;
+            write(&pkcs7, s.pkcs7)?;
             Ok(true)
         }
         Cmd::CheckManifest { manifest, resolved, module, qemu_ok } => {

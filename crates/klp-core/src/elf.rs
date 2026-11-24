@@ -46,6 +46,37 @@ pub fn has_module_signature(bytes: &[u8]) -> bool {
     bytes.ends_with(MODULE_SIG_MAGIC)
 }
 
+/// A module split into the signed content and its PKCS#7 signature.
+pub struct ModuleSignature<'a> {
+    pub content: &'a [u8],
+    pub pkcs7: &'a [u8],
+}
+
+/// Split the appended signature (`scripts/sign-file`): content, PKCS#7
+/// blob, `struct module_signature` (12 bytes, sig_len big-endian at the
+/// end), magic string.
+pub fn split_module_signature(bytes: &[u8]) -> Result<ModuleSignature<'_>> {
+    const INFO: usize = 12;
+    const PKEY_ID_PKCS7: u8 = 2;
+    if !has_module_signature(bytes) {
+        bail!("module has no appended signature");
+    }
+    let end = bytes.len() - MODULE_SIG_MAGIC.len();
+    if end < INFO {
+        bail!("module signature trailer is truncated");
+    }
+    let info = &bytes[end - INFO..end];
+    if info[2] != PKEY_ID_PKCS7 {
+        bail!("module signature is not PKCS#7 (id_type {})", info[2]);
+    }
+    let sig_len = u32::from_be_bytes(info[8..12].try_into().unwrap()) as usize;
+    let sig_end = end - INFO;
+    if sig_len == 0 || sig_len > sig_end {
+        bail!("module signature length {sig_len} is invalid");
+    }
+    Ok(ModuleSignature { content: &bytes[..sig_end - sig_len], pkcs7: &bytes[sig_end - sig_len..sig_end] })
+}
+
 pub fn parse_modinfo(bytes: &[u8]) -> Result<ModInfo> {
     let file = object::File::parse(bytes).context("module is not a valid ELF file")?;
     let sec = file.section_by_name(".modinfo").context("module has no .modinfo section")?;
@@ -280,6 +311,20 @@ mod tests {
                 KlpSym { object: "vmlinux".into(), name: "tcp_foo.isra.0".into(), sympos: 0 },
             ]
         );
+    }
+
+    #[test]
+    fn split_signature() {
+        let mut m = b"ELFDATA".to_vec();
+        let sig = b"PKCS7BLOB";
+        m.extend_from_slice(sig);
+        m.extend_from_slice(&[0, 0, 2, 0, 0, 0, 0, 0]);
+        m.extend_from_slice(&(sig.len() as u32).to_be_bytes());
+        m.extend_from_slice(MODULE_SIG_MAGIC);
+        let s = split_module_signature(&m).unwrap();
+        assert_eq!(s.content, b"ELFDATA");
+        assert_eq!(s.pkcs7, b"PKCS7BLOB");
+        assert!(split_module_signature(b"ELFDATA").is_err());
     }
 
     #[test]
