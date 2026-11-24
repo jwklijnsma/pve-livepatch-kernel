@@ -31,7 +31,6 @@ node.
 - `builder/run.sh` mounts the module key read-only into the signing
   container only.
 - `builder/publish.sh`, `promote.sh` and `revoke.sh` sign with
-- `builder/publish.sh`, `promote.sh` and `revoke.sh` sign with
   `MANIFEST_KEY` (hvpatch-tool) or `MINISIGN_KEY` (the `minisign` tool).
   For an offline key, run them on the offline machine with a copy of the
   repository directory and copy the result back.
