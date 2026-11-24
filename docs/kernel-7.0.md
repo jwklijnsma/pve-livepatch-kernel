@@ -3,9 +3,9 @@
 Proxmox VE 9's default kernel series, 7.0.x, is built from `pve-kernel.git`:
 the Ubuntu kernel as a submodule plus Proxmox's `patches/kernel/`. The
 opt-in 7.3 series comes from `proxmox-kernel.git` and is supported fully.
-7.0 support is **experimental**: the build path exists and its parts are
-checked (below), but no 7.0 livepatch has been through the QEMU stage and a
-real host yet. Please report results.
+7.0 support is **experimental**: one release (7.0.14-30-pve) has been
+built, tested and run on a test cluster (below). Please report results
+from other hardware.
 
 ## What is different
 
@@ -35,6 +35,28 @@ objtool. The livepatch does not depend on the shipped kernel having been
 built with the same objtool binary: Gate A (symbols, positions, CRCs) and
 the QEMU stage (booting the shipped kernel) check the result against what
 Proxmox shipped, as for 7.3.
+
+## Tested
+
+7.0.14-30-pve, level 1 with the three catalog entries (patched functions
+`vmlinux:gup_fast_fallback`, `overlay:ovl_fileattr_set`):
+
+- **Build:** klp-build, Gate A against the shipped `System.map`,
+  `Module.symvers` and modules, signing, QEMU stage (shipped kernel,
+  5 patch/unpatch cycles under load, kernel log clean). The first build of
+  the release took about 3 hours on 4 cores; later levels reuse the
+  original build (about 35 minutes).
+- **Three-node PVE 9.2 cluster**, two guests per node with CPU, memory,
+  disk and network load:
+  - `hvpatch apply` under load: about 13 s per node (fetch, signature
+    checks, post-check); the transition itself 2–3 s. Guests pinged every
+    100 ms: no loss, longest gap 0.11 s. No warnings in the kernel log.
+  - `revert` (3.5 s), the timer skips a node on hold, `apply` lifts it.
+  - Reboot with the repository unreachable: the boot unit reloaded the
+    cached level 7 s after boot.
+  - `apply` on two nodes at once: the second waited for the cluster lock.
+  - Revocation: the active level was taken out of service on the next run;
+    with the list withheld from the repository, nothing new was loaded.
 
 ## Source preparation
 
