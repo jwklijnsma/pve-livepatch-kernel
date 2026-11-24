@@ -6,6 +6,24 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- Releases ship a CycloneDX SBOM (`hvpatch.cdx.json`) with an SBOM
+  attestation for the binaries and the package.
+- CI checks the minimum Rust version (1.88) and runs `cargo deny`
+  (licenses, RustSec advisories, sources); OpenSSF Scorecard runs weekly.
+- Issue form for test reports.
+- README: terminal recording of `apply`, `revert` and `status` on a node
+  with running VMs (`docs/assets/demo.gif`); `contrib/demo/demo.sh` now
+  times `apply` (it called `time` as a command, which does not exist).
+
+### Changed
+
+- README: 7.0 in the quick start, current roadmap, dated statement on
+  KernelCare. SECURITY.md describes the current signing setup.
+- chrono is unmaintained (RUSTSEC-2026-0543); accepted for now, the move
+  to jiff is tracked in #5.
+
 ## [0.3.0] - 2026-11-24
 
 Livepatches for Proxmox VE 9's default kernel series 7.0 (experimental):
@@ -122,7 +140,7 @@ load anything new while the repository withholds it.
 
 ## [0.2.1] - 2026-11-24
 
-From an independent review of the whole code base. It found no way to get
+From a review of the whole code base. It found no way to get
 unverified code loaded, but three faults in failure handling that made each
 other worse; they are fixed here.
 

@@ -8,48 +8,46 @@ reboot at your next maintenance window instead of tonight.
 over an existing pve-klp node; see the [changelog](CHANGELOG.md).*
 
 [![CI](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml/badge.svg)](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml)
+[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/prepaid-host/hvpatch/badge)](https://scorecard.dev/viewer/?uri=github.com/prepaid-host/hvpatch)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 ![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Proxmox VE 9](https://img.shields.io/badge/Proxmox%20VE-9-E57000.svg)
 [![Release](https://img.shields.io/github/v/release/prepaid-host/hvpatch?include_prereleases&sort=semver)](https://github.com/prepaid-host/hvpatch/releases)
 
-```console
-$ hvpatch status
-kernel:        7.3.5-1-pve
-ring:          stable
-state:         active
-livepatch:     klp_hvp_7_3_5_1_p3 (level 3)
-manifest:      level 3, signed by project, built 2026-11-23 09:00 (0 days ago), expires 2026-12-23
-fixed live:    CVE-2026-XXXXX, CVE-2026-YYYYY
-NOT covered:   CVE-2026-ZZZZZ (struct change), fixed in 7.3.6-1-pve
-reboot:        REQUIRED
-               - not fixable by livepatch: CVE-2026-ZZZZZ
-```
+![hvpatch apply on a Proxmox VE node with running VMs](docs/assets/demo.gif)
 
-> **Early release.** Tested on real Proxmox VE 9.2 hosts (nested, kernels
-> `7.3.4-1-pve` and `7.3.5-1-pve`): the full chain from the Proxmox source to
-> `apply`, `revert` and the reload after reboot; atomic replace between
-> levels; a stalled transition that is reversed without `force`; Secure Boot
-> with MOK; and three backported CVE fixes (one in `vmlinux`, one in the
-> `overlay` module) whose reproducer is vulnerable before, fixed with the
-> livepatch, and vulnerable again after `revert`. Transitions take about
-> 1.6 s. Since 0.3.0 also the default 7.0 series (experimental):
-> `7.0.14-30-pve` on a three-node test cluster under guest load, without a
-> lost guest packet ([docs/kernel-7.0.md](docs/kernel-7.0.md)). No project builds of livepatch modules are published yet: build
-> your own with [docs/self-hosting.md](docs/self-hosting.md). Feedback and
-> testers on non-production hosts are very welcome.
+*Recorded on a test node with two loaded VMs (`contrib/demo/demo.sh`,
+[asciicast](docs/assets/demo.cast)).*
+
+> **Early release.** Tested on real Proxmox VE 9.2 hosts:
+>
+> - **7.3** (`7.3.4-1-pve`, `7.3.5-1-pve`, nested): the full chain from the
+>   Proxmox source to `apply`, `revert` and the reload after reboot; atomic
+>   replace between levels; a stalled transition reversed without `force`;
+>   Secure Boot with MOK; three backported CVE fixes whose reproducer is
+>   vulnerable before, fixed with the livepatch, and vulnerable again after
+>   `revert`.
+> - **7.0** (`7.0.14-30-pve`, experimental since 0.3.0): a three-node test
+>   cluster with loaded guests, no lost guest packet during `apply`
+>   ([docs/kernel-7.0.md](docs/kernel-7.0.md)).
+>
+> No project builds of livepatch modules are published yet: build your own
+> with [docs/self-hosting.md](docs/self-hosting.md). Feedback and
+> [test reports](https://github.com/prepaid-host/hvpatch/issues/new?template=test_report.yml)
+> from non-production hosts are very welcome.
 
 ## Why
 
-Kernel fixes for Proxmox VE arrive weekly in 2026. Every one means draining a
-node, rebooting it and filling it again. Passthrough guests and single nodes
-without a migration target have real downtime. Between the fix and the reboot
-the host stays vulnerable, and for a guest-to-host escape that is the risk
-that matters.
+Kernel security fixes for Proxmox VE arrive regularly. Every one means
+draining a node, rebooting it and filling it again. Passthrough guests and
+single nodes without a migration target have real downtime. Between the fix
+and the reboot the host stays vulnerable, and for a guest-to-host escape that
+is the risk that matters.
 
-KernelCare covers PVE 7 and 8 only, and Proxmox has livepatching "under
-re-evaluation". hvpatch closes the gap with the kernel's own tooling, in the
-open, and without making you trust a third party.
+As of November 2026, KernelCare does not list Proxmox VE 9 among its
+supported platforms, and Proxmox itself offers no livepatching. hvpatch
+closes the gap with the kernel's own tooling, in the open, and without
+making you trust a third party.
 
 ## What you get
 
@@ -71,7 +69,8 @@ open, and without making you trust a third party.
 
 ## Quick start
 
-On a Proxmox VE 9 host with the opt-in 7.3 kernel:
+On a Proxmox VE 9 host with the default 7.0 kernel (experimental) or the
+opt-in 7.3 kernel:
 
 ```bash
 # 1. Install the agent (Debian package from the releases page)
@@ -88,8 +87,9 @@ hvpatch apply
 hvpatch auto enable
 ```
 
-Every release ships SHA256SUMS and signed build provenance, so you can check
-that a download was built by this repository's CI:
+Every release ships SHA256SUMS, a CycloneDX SBOM (`hvpatch.cdx.json`) and
+signed build provenance, so you can check that a download was built by this
+repository's CI:
 
 ```bash
 gh attestation verify hvpatch_amd64.deb --repo prepaid-host/hvpatch
@@ -147,6 +147,21 @@ Details: [docs/architecture.md](docs/architecture.md).
 | `hvpatch auto enable\|disable` | Hourly timer for new levels (off by default) |
 | `hvpatch mok enroll` | Enroll the module certificate for Secure Boot |
 
+`status` with a fix that needs a reboot (example output):
+
+```console
+$ hvpatch status
+kernel:        7.3.5-1-pve
+ring:          stable
+state:         active
+livepatch:     klp_hvp_7_3_5_1_p3 (level 3)
+manifest:      level 3, signed by repository, built 2026-11-23 09:00 (0 days ago), expires 2026-12-23
+fixed live:    CVE-2026-XXXXX, CVE-2026-YYYYY
+NOT covered:   CVE-2026-ZZZZZ (struct change), fixed in 7.3.6-1-pve
+reboot:        REQUIRED
+               - not fixable by livepatch: CVE-2026-ZZZZZ
+```
+
 After a reboot into the same kernel, the boot unit reloads the active level
 from the local cache before guests start. After a reboot into a new kernel,
 nothing old is loaded.
@@ -201,9 +216,10 @@ out of scope.
 | 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | done (nested PVE 9.2, 7.3.5-1-pve) |
 | 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | fixes done on 7.3.4-1-pve with reproducer; PSA review open |
 | 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | `builder/run.sh` per kernel done; scheduled CI planned |
-| 3 | Agent 0.1: check, status, apply, revert, boot unit, .deb, Ansible role | released in v0.1.0, Ansible role planned |
-| 4 | Nested-PVE tests under load, canary on AMD and Intel hardware, 24 h soak | nested tests under host load, stalled transitions and Secure Boot done; guests under load, bare metal and soak open |
-| 5 | Public project builds, status page, APT repository | planned |
+| 3 | Agent: check, status, apply, revert, boot unit, .deb, Ansible role | done (Ansible role and Checkmk check in `contrib/`) |
+| 4 | Tests under load, canary on AMD and Intel hardware, 24 h soak | nested tests, stalled transitions, Secure Boot, and a three-node 7.0 cluster with guests under load done; bare-metal canary and 24 h soak open |
+| 5 | Public project builds, status page, APT repository | status page generator done (`hvpatch-tool status-page`); public builds and APT repository planned |
+| 6 | Default 7.0 kernel series | experimental since 0.3.0 (7.0.14-30-pve); leaves experimental after several releases built and a soak on bare metal |
 
 ## FAQ
 
@@ -217,7 +233,10 @@ Still: this is pre-release software that loads code into your hypervisor
 kernel. Test on non-production hosts first.
 
 **Why not just KernelCare?**
-KernelCare does not support Proxmox VE 9 and has it not on its roadmap.
+As of November 2026, KernelCare does not list Proxmox VE 9 as supported.
+Check [TuxCare's FAQ](https://support.tuxcare.com/hc/en-us/sections/4408313341724-FAQ)
+for the current state. hvpatch is free, open source, and you sign the
+patches with your own keys.
 
 **Whom do I trust?**
 With your own pipeline and keys, only the catalog you review. With project

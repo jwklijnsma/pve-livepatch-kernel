@@ -1,0 +1,44 @@
+# cargo-deny: licenses, security advisories, duplicate and unknown sources
+# of all dependencies. Run: cargo deny check
+[graph]
+targets = ["x86_64-unknown-linux-gnu", "x86_64-unknown-linux-musl"]
+all-features = true
+
+[advisories]
+# Every advisory in the RustSec database fails the check unless listed here
+# with a reason.
+ignore = [
+  # chrono is unmaintained; replacing it keeps the wire format and needs
+  # compatibility tests: https://github.com/prepaid-host/hvpatch/issues/5
+  { id = "RUSTSEC-2026-0543", reason = "migration to jiff tracked in #5" },
+]
+
+[licenses]
+# Licenses compatible with distributing the binaries under GPL-2.0-only.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-3-Clause",
+  "ISC",
+  "Zlib",
+  "Unicode-3.0",
+  "CDLA-Permissive-2.0",
+  "GPL-2.0-only",
+]
+confidence-threshold = 0.9
+
+[[licenses.clarify]]
+crate = "ring"
+expression = "MIT AND ISC AND OpenSSL"
+license-files = [{ path = "LICENSE", hash = 0xbd0eed23 }]
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]

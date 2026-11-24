@@ -1,0 +1,61 @@
+name: Test report
+description: You ran hvpatch on a test host or cluster. Tell us how it went, good or bad.
+labels: [test-report]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for testing. Reports from hardware and setups we do not have
+        help most. Please do not test on production hosts.
+        Security issues must not be reported here. See SECURITY.md.
+  - type: dropdown
+    id: result
+    attributes:
+      label: Result
+      options:
+        - Worked as expected
+        - Worked, with remarks
+        - Did not work
+    validations:
+      required: true
+  - type: input
+    id: kernel
+    attributes:
+      label: Kernel (`uname -r`), Proxmox VE version (`pveversion`) and hvpatch version
+      placeholder: 7.0.14-30-pve, pve-manager/9.2.x, hvpatch 0.3.0
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Hardware
+      description: CPU model, bare metal or nested, Secure Boot on or off
+      placeholder: AMD EPYC 7543, bare metal, Secure Boot on
+    validations:
+      required: true
+  - type: textarea
+    id: setup
+    attributes:
+      label: Setup
+      description: Single node or cluster, storage (ZFS, Ceph, LVM), guests and their load during the test
+  - type: checkboxes
+    id: tested
+    attributes:
+      label: What did you test?
+      options:
+        - label: "`hvpatch apply` with running guests"
+        - label: "`hvpatch revert` and apply again"
+        - label: Reboot into the same kernel (boot unit reloads the level)
+        - label: Upgrade to a new level (atomic replace)
+        - label: Own build pipeline (`builder/run.sh`)
+        - label: Several nodes in a cluster
+  - type: textarea
+    id: output
+    attributes:
+      label: Output of `hvpatch status --json` and relevant kernel log lines
+      description: "`journalctl -k | grep -iE 'livepatch|klp'`"
+      render: text
+  - type: textarea
+    id: notes
+    attributes:
+      label: What went well, what did not, what was unclear?

@@ -15,13 +15,30 @@ rules are stricter than usual.
 4. Two maintainer approvals are the rule. The project currently has one
    maintainer, so for now one approval is required; this changes back as
    soon as there is a second maintainer. Want to be one? Open an issue.
-   Commits must be signed.
+
+## Signed commits
+
+Commits to `main` must be signed (SSH or GPG) and show as "Verified" on
+GitHub. With an SSH key:
+
+```bash
+git config gpg.format ssh
+git config user.signingkey ~/.ssh/id_ed25519.pub
+git config commit.gpgsign true
+```
+
+Then add the same public key on GitHub as a *signing* key (Settings → SSH
+and GPG keys).
 
 A backport for a specific kernel is a separate patch file with its own review.
 
 ## Code
 
-- Rust: `make lint test` must pass (`cargo fmt`, `clippy -D warnings`, tests).
+- Rust: `make lint test` must pass (`cargo fmt`, `clippy -D warnings`, tests),
+  and `make deny` (`cargo deny check`: licenses and RustSec advisories). The
+  code must build with Rust 1.88 (`rust-version`); CI checks that.
+- New dependencies need a reason in the pull request: the agent runs as
+  root on hypervisors.
 - Shell: `shellcheck -x -S warning builder/*.sh`.
 - Agent changes that touch loading, transitions or verification need a test
   in `crates/hvpatch/tests/agent.rs` against the emulated kernel.

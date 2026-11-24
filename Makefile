@@ -1,4 +1,4 @@
-.PHONY: all build test lint fmt deb static builder-image clean
+.PHONY: all build test lint deny fmt deb static builder-image clean
 
 all: lint test build
 
@@ -12,6 +12,10 @@ lint:
 	cargo fmt --all --check
 	cargo clippy --workspace --all-targets --locked -- -D warnings
 	cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog
+
+# Licenses and RustSec advisories of all dependencies (needs cargo-deny).
+deny:
+	cargo deny check
 
 fmt:
 	cargo fmt --all

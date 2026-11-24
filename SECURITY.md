@@ -23,14 +23,19 @@ Proxmox. This project only packages public fixes.
   binds kernel release, vmlinux build-id, level, ring, module hash and
   expiry. The agent trusts every `*.pub` in `/etc/hvpatch/trusted.d/`.
   Rotation: ship the new key, sign with it, remove the old one later.
-- **Module key** (X.509): signs the `.ko` with `scripts/sign-file`. The kernel
+- **Module key** (X.509): signs the `.ko` with `sign-file` from Debian's
+  `linux-kbuild` package, in a container without the kernel tree. The kernel
   checks it when the module loads. Under Secure Boot the certificate must be
   enrolled as MOK (`hvpatch mok enroll`, then confirm on the console). A MOK
   can only be removed with a reboot.
 
-The signing keys never live as plain CI secrets. Signing happens on a
-dedicated runner or a hardware token, and only after the build passed
-Gate A and the QEMU stage.
+The signing keys never live as plain CI secrets. In `builder/run.sh` the
+module key is only mounted into the signing container (no kernel tree, no
+network), and manifests are signed in a separate step on the signing host,
+which can be offline. Project builds, once published, follow the same
+split: signing on a dedicated host or hardware token, and only after the
+build passed Gate A and the QEMU stage. See
+[docs/key-management.md](docs/key-management.md).
 
 ## Guarantees and non-guarantees
 

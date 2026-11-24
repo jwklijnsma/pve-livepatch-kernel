@@ -25,6 +25,24 @@ jobs:
           name: hvpatch-x86_64-linux-musl
           path: target/x86_64-unknown-linux-musl/release/hvpatch
 
+  msrv:
+    # The oldest Rust that README and Cargo.toml (rust-version) promise.
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: rustup toolchain install 1.88 --profile minimal && rustup default 1.88
+      - run: cargo check --workspace --all-targets --locked
+
+  deny:
+    # Licenses, RustSec advisories, duplicate and unknown sources (deny.toml).
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: EmbarkStudios/cargo-deny-action@81891abc19297b21343b15ef67dc61e4aea74fda # v2.1.4
+        with:
+          command: check
+          arguments: --all-features
+
   catalog:
     runs-on: ubuntu-24.04
     steps:
