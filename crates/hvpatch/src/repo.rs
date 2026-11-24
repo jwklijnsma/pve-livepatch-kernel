@@ -38,6 +38,9 @@ pub fn open(cfg: &Config) -> Result<Box<dyn Repo>> {
     if r.starts_with("https://") || (cfg.allow_http && r.starts_with("http://")) {
         let agent: ureq::Agent = ureq::Agent::config_builder()
             .timeout_global(Some(std::time::Duration::from_secs(cfg.http_timeout)))
+            // An unreachable repository (dropped packets) should fail fast;
+            // the global timeout is sized for module downloads.
+            .timeout_connect(Some(std::time::Duration::from_secs(cfg.http_timeout.min(15))))
             .https_only(!cfg.allow_http)
             .user_agent(concat!("hvpatch/", env!("CARGO_PKG_VERSION")))
             .build()

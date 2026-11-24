@@ -36,6 +36,9 @@ All notable changes to this project are documented here. The format follows
   load.
 - **GPL:** every build has a corresponding-source bundle (patches, kernel
   tarball, config, toolchain, scripts), published next to the module.
+- HTTP repositories time out after 15 s when they cannot be reached at
+  all, instead of waiting for the 300 s download timeout (`hvpatch check`
+  hung on a dropped connection).
 - The boot reload of a level below the highest one accepted (after a
   revocation) is a restore, not a rollback.
 - `resolve` refuses "already contained" when it contradicts the entry's
