@@ -6,6 +6,20 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-24
+
+Livepatches for Proxmox VE 9's default kernel series 7.0 (experimental):
+7.0.14-30-pve has been built, tested in QEMU and run on a three-node test
+cluster under guest load ([docs/kernel-7.0.md](docs/kernel-7.0.md)).
+Also: a signed revocation list, states for fixes with callbacks, CVE
+scanning against the kernel CNA's data, a stricter split of the build into
+four containers, and integrations (Checkmk, Ansible, notification hook).
+
+Upgrading: install the new package on the nodes; the configuration is
+unchanged. Build hosts: rebuild the builder image (`run.sh` does), and keep
+using your keys. Nodes that have accepted a revocation list once do not
+load anything new while the repository withholds it.
+
 ### Changed (build side)
 
 - **Separate containers in `run.sh`:** fetch (the shipped packages,
@@ -450,7 +464,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/hvpatch/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/prepaid-host/hvpatch/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/prepaid-host/hvpatch/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/prepaid-host/hvpatch/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/prepaid-host/hvpatch/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/prepaid-host/hvpatch/compare/v0.1.5...v0.1.6

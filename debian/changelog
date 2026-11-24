@@ -1,3 +1,12 @@
+hvpatch (0.3.0-1) trixie; urgency=medium
+
+  * Experimental support for the 7.0 kernel series (tested with
+    7.0.14-30-pve), signed revocation list, states for fixes with
+    callbacks, CVE scanning, build split into four containers,
+    integrations (Checkmk, Ansible, notification hook).
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Tue, 24 Nov 2026 19:45:00 +0000
+
 hvpatch (0.2.1-1) trixie; urgency=medium
 
   * Robustness from an independent review: tenant-proof kernel log check,
