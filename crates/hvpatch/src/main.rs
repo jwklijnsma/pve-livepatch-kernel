@@ -110,7 +110,10 @@ fn build_agent(cfg: Config, quiet: bool) -> Result<Agent<LinuxKernel>> {
 }
 
 fn build_agent_at(cfg: Config, quiet: bool, root: std::path::PathBuf) -> Result<Agent<LinuxKernel>> {
-    let trust = TrustStore::load_dir(&cfg.trusted_keys_dir)?;
+    let (trust, warnings) = TrustStore::load_dir_lenient(&cfg.trusted_keys_dir)?;
+    for w in warnings {
+        eprintln!("hvpatch: warning: {w}");
+    }
     let repo = if cfg.repository.trim().is_empty() { None } else { Some(repo::open(&cfg)?) };
     let mut agent = Agent::new(cfg, LinuxKernel::with_root(root), repo, trust);
     agent.echo = !quiet;
@@ -180,7 +183,8 @@ fn run(cli: Cli) -> Result<i32> {
             finish(res)
         }
         Cmd::Boot => {
-            let _lock = Lock::acquire(&cfg.lock_file())?;
+            // The timer may be running: wait for it instead of giving up.
+            let _lock = Lock::acquire_wait(&cfg.lock_file(), std::time::Duration::from_secs(cfg.boot_lock_wait))?;
             let agent = build_agent(cfg, cli.quiet)?;
             let res = agent.boot();
             write_textfile(&agent);
@@ -288,7 +292,13 @@ fn setup(
 
 #[cfg(feature = "http")]
 fn fetch_text(url: &str) -> Result<String> {
-    let mut resp = ureq::get(url).call().with_context(|| format!("GET {url}"))?;
+    // https only, also across redirects: this fetches a trust anchor.
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .https_only(true)
+        .timeout_global(Some(std::time::Duration::from_secs(60)))
+        .build()
+        .into();
+    let mut resp = agent.get(url).call().with_context(|| format!("GET {url}"))?;
     Ok(resp.body_mut().with_config().limit(64 << 10).read_to_string()?)
 }
 

@@ -6,6 +6,68 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-11-24
+
+From an independent review of the whole code base. It found no way to get
+unverified code loaded, but three faults in failure handling that made each
+other worse; they are fixed here.
+
+### Fixed
+
+- **Kernel log check could be triggered by tenants.** Any line containing
+  "general protection fault" or "BUG:" backed a patch out, including a
+  crashing user process ("traps: …", info level) or a process named "BUG:".
+  Only records the kernel itself logged at warning level or worse count
+  now, and only if the message starts with a known marker; taint flags stay
+  the primary signal.
+- **Failed levels were retried every hour**, and a level that crashed the
+  host would have been loaded again after every reboot. Loads are recorded
+  before they start; a level that fails or whose load is interrupted is
+  quarantined by module hash. The timer and the boot reload skip it (the
+  boot reload falls back to the highest cached level below it); an
+  explicit `apply` retries it.
+- **Restoring the previous level left the node without a livepatch** for
+  up to the transition timeout. The previous level is now loaded again
+  while the failed one is still active, which replaces it atomically.
+- A run interrupted after a completed transition is recognised and
+  recorded as active instead of reporting "in progress" forever.
+- Every error after a manifest was accepted (download, disk full, …) is
+  recorded as `failed` with its reason.
+- Hooks: run like run-parts (no `*.dpkg-old`, no dotfiles), with a timeout
+  (`hook_timeout`, killed with their process group), only if owned by root
+  and not writable by others, with `HVPATCH_MODE` = apply, boot or restore.
+- The boot unit is no longer restarted by package upgrades, has the same
+  sandbox as the timer unit, and waits for a running timer instead of
+  failing (`boot_lock_wait`).
+- A livepatch being freed by the kernel (sysfs gone, reference not yet
+  dropped) is no longer mistaken for a forced one.
+- Read errors in sysfs other than "not found" are errors, not a finished
+  transition. Transition timeouts count wall-clock time.
+- A node clock behind the build time no longer blocks the boot reload
+  (warning instead).
+- One damaged file in `trusted.d` is skipped with a warning instead of
+  stopping every command. A damaged `state.json` names the way out.
+- State writes fsync the directory; the module size limit is 32 MiB; the
+  cache keeps three levels per kernel and forgets old kernels;
+  `setup --key https://` refuses redirects to http; repositories answering
+  403 for missing files (S3) count as "not published"; a manifest whose
+  signature does not match is fetched once more before failing (publish
+  race).
+- Manifests must be bound to a kernel build-id; `hvpatch-tool manifest`
+  requires `--build-id`.
+
+### Added
+
+- Cluster-wide lock in pmxcfs: in a Proxmox VE cluster only one node loads
+  a livepatch at a time; without quorum nothing is loaded
+  (`cluster_lock`).
+- Timer policy: `delay_hours` (delayed channel) and `pin_level`.
+- `/run/hvpatch/effective_version` and `fixed_cves` for vulnerability
+  scanners.
+- Warning (or refusal with `refuse_on_trace_conflict`) when kprobes or BPF
+  programs are attached to a function the livepatch replaces.
+- `status` lists quarantined levels; metric `hvpatch_quarantined`.
+
 ### Changed
 
 - Catalog review: one approval is required while the project has a single
@@ -275,7 +337,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/hvpatch/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/prepaid-host/hvpatch/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/prepaid-host/hvpatch/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/prepaid-host/hvpatch/compare/v0.1.6...v0.2.0
 [0.1.6]: https://github.com/prepaid-host/hvpatch/compare/v0.1.5...v0.1.6
 [0.1.5]: https://github.com/prepaid-host/hvpatch/compare/v0.1.4...v0.1.5

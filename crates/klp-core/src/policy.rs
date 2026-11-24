@@ -15,6 +15,9 @@ pub enum Mode {
     /// Boot unit: reload the module that was active before the reboot,
     /// from the local cache, into the same kernel.
     BootFromCache,
+    /// Put a previously accepted level back (from the local cache) because
+    /// a newer one failed. Lower than the highest accepted level by design.
+    Restore,
 }
 
 #[derive(Debug, Clone)]
@@ -74,6 +77,8 @@ pub enum Rejection {
     LevelNotOffered { offered: u32, requested: u32 },
     #[error("manifest was built at {0}, which is in the future; check the node clock")]
     FromTheFuture(DateTime<Utc>),
+    #[error("manifest is not bound to a kernel build-id; refusing (rebuild with --build-id)")]
+    BuildIdMissing,
 }
 
 /// Allowed clock skew between builder and node.
@@ -87,24 +92,30 @@ pub fn decide(m: &Manifest, node: &NodeFacts, ctx: &Context, mode: Mode) -> Deci
     if m.kernel != node.kernel_release {
         return reject(KernelMismatch { manifest: m.kernel.clone(), running: node.kernel_release.clone() });
     }
-    if let Some(want) = &m.kernel_build_id {
-        match &node.kernel_build_id {
-            None => return reject(BuildIdUnknown),
-            Some(have) if !have.eq_ignore_ascii_case(want) => {
-                return reject(BuildIdMismatch { manifest: want.clone(), running: have.clone() });
-            }
-            Some(_) => {}
+    // A kernel release string can be rebuilt with other contents; the
+    // build-id identifies the binary. Every manifest must carry one.
+    let Some(want) = &m.kernel_build_id else { return reject(BuildIdMissing) };
+    match &node.kernel_build_id {
+        None => return reject(BuildIdUnknown),
+        Some(have) if !have.eq_ignore_ascii_case(want) => {
+            return reject(BuildIdMismatch { manifest: want.clone(), running: have.clone() });
         }
+        Some(_) => {}
     }
     if m.ring != node.ring {
         return reject(RingMismatch { manifest: m.ring.clone(), node: node.ring.clone() });
     }
     if m.built > node.now + MAX_SKEW {
-        return reject(FromTheFuture(m.built));
+        // Before time sync the RTC may lag; a cached manifest that was
+        // accepted before must still reload at boot.
+        if mode == Mode::Fetch {
+            return reject(FromTheFuture(m.built));
+        }
+        warnings.push(format!("manifest was built at {}, after the node clock; check the clock", m.built));
     }
     if node.now >= m.expires {
         match mode {
-            Mode::BootFromCache if ctx.allow_expired_on_boot => warnings.push(format!(
+            Mode::BootFromCache | Mode::Restore if ctx.allow_expired_on_boot => warnings.push(format!(
                 "manifest expired at {}; reloading the previously active module anyway, \
                  because running without it is not safer. No newer patches are coming: \
                  schedule the kernel update.",
@@ -118,15 +129,17 @@ pub fn decide(m: &Manifest, node: &NodeFacts, ctx: &Context, mode: Mode) -> Deci
             return reject(LevelNotOffered { offered: m.level, requested: req });
         }
     }
-    if m.level < ctx.highest_accepted {
-        return reject(Rollback { offered: m.level, highest: ctx.highest_accepted });
+    if mode != Mode::Restore {
+        if m.level < ctx.highest_accepted {
+            return reject(Rollback { offered: m.level, highest: ctx.highest_accepted });
+        }
+        match ctx.active_level {
+            Some(a) if a == m.level => return Decision::AlreadyActive,
+            Some(a) if a > m.level => return reject(Downgrade { offered: m.level, active: a }),
+            _ => {}
+        }
     }
-    match ctx.active_level {
-        Some(a) if a == m.level => return Decision::AlreadyActive,
-        Some(a) if a > m.level => return reject(Downgrade { offered: m.level, active: a }),
-        _ => {}
-    }
-    if ctx.held && !ctx.explicit {
+    if ctx.held && !ctx.explicit && mode != Mode::Restore {
         return Decision::Skip("livepatching is on hold after `hvpatch revert`; run `hvpatch apply` to resume".into());
     }
     let days_left = (m.expires - node.now).num_days();
@@ -201,6 +214,32 @@ mod tests {
             decide(&manifest(), &n, &Context::default(), Mode::Fetch),
             Decision::Reject(Rejection::BuildIdUnknown)
         );
+    }
+
+    #[test]
+    fn manifest_without_build_id_is_rejected() {
+        let mut m = manifest();
+        m.kernel_build_id = None;
+        assert_eq!(decide(&m, &node(), &Context::default(), Mode::Fetch), Decision::Reject(Rejection::BuildIdMissing));
+    }
+
+    #[test]
+    fn restore_may_go_below_the_highest_level_but_not_to_another_kernel() {
+        let ctx = Context { highest_accepted: 4, active_level: Some(4), held: true, ..Default::default() };
+        assert!(ok(decide(&manifest(), &node(), &ctx, Mode::Restore)));
+        let mut n = node();
+        n.kernel_build_id = Some("ccdd".into());
+        assert!(matches!(decide(&manifest(), &n, &ctx, Mode::Restore), Decision::Reject(_)));
+    }
+
+    #[test]
+    fn clock_behind_rejects_fresh_manifests_but_not_the_boot_reload() {
+        let mut n = node();
+        n.now = "2026-11-20T00:00:00Z".parse().unwrap();
+        match decide(&manifest(), &n, &Context::default(), Mode::BootFromCache) {
+            Decision::Apply { warnings } => assert!(warnings[0].contains("clock")),
+            d => panic!("{d:?}"),
+        }
     }
 
     #[test]

@@ -75,9 +75,18 @@ impl KernelOps for LinuxKernel {
 
     fn patch(&self, name: &str) -> Result<Option<PatchInfo>> {
         let d = self.lp_dir(name);
-        // The directory disappears asynchronously after a disable; treat
-        // a vanished attribute as "gone" instead of an error.
-        let (Ok(enabled), Ok(transition)) = (read_bool(&d.join("enabled")), read_bool(&d.join("transition"))) else {
+        // The directory disappears asynchronously after a disable: a missing
+        // attribute means "gone". Any other error (EIO, EACCES) is an error,
+        // not a finished transition.
+        let read = |attr: &str| -> Result<Option<bool>> {
+            let p = d.join(attr);
+            match fs::read_to_string(&p) {
+                Ok(s) => Ok(Some(s.trim() == "1")),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(e) => Err(e).with_context(|| format!("reading {}", p.display())),
+            }
+        };
+        let (Some(enabled), Some(transition)) = (read("enabled")?, read("transition")?) else {
             return Ok(None);
         };
         Ok(Some(PatchInfo { name: name.to_owned(), enabled, transition }))
@@ -163,6 +172,22 @@ impl KernelOps for LinuxKernel {
         Ok(out)
     }
 
+    fn traced_functions(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        for f in ["/sys/kernel/tracing/enabled_functions", "/sys/kernel/debug/tracing/enabled_functions"] {
+            if let Ok(t) = fs::read_to_string(self.p(f)) {
+                out.extend(crate::kernel::parse_enabled_functions(&t));
+                break;
+            }
+        }
+        if let Ok(t) = fs::read_to_string(self.p("/sys/kernel/debug/kprobes/list")) {
+            out.extend(crate::kernel::parse_kprobes_list(&t));
+        }
+        out.sort();
+        out.dedup();
+        Ok(out)
+    }
+
     fn sleep(&self, d: Duration) {
         std::thread::sleep(d)
     }
@@ -177,7 +202,7 @@ mod sys {
 
     use anyhow::{Context, Result, bail};
 
-    use crate::kernel::{KmsgWatch, LoadError};
+    use crate::kernel::{KmsgRecord, KmsgWatch, LoadError};
 
     pub fn finit_module(file: &File) -> Result<(), LoadError> {
         let params = c"";
@@ -213,7 +238,7 @@ mod sys {
     }
 
     impl KmsgWatch for Kmsg {
-        fn drain(&mut self) -> Result<Vec<String>> {
+        fn drain(&mut self) -> Result<Vec<KmsgRecord>> {
             use std::io::Read;
             let mut out = Vec::new();
             let mut buf = vec![0u8; 16 * 1024];
@@ -223,9 +248,9 @@ mod sys {
                     // One read() returns exactly one record:
                     // "prio,seq,timestamp,flags;message\n" plus continuation lines.
                     Ok(n) => {
-                        let rec = String::from_utf8_lossy(&buf[..n]);
-                        let msg = rec.split_once(';').map(|(_, m)| m).unwrap_or(&rec);
-                        out.push(msg.lines().next().unwrap_or_default().to_owned());
+                        if let Some(r) = KmsgRecord::parse(&String::from_utf8_lossy(&buf[..n])) {
+                            out.push(r);
+                        }
                     }
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
                     // EPIPE: records were overwritten; the next read continues.

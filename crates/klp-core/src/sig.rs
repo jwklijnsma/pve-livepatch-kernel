@@ -30,6 +30,32 @@ pub struct TrustStore {
 }
 
 impl TrustStore {
+    /// Like [`Self::load_dir`], but a damaged key file is skipped and
+    /// reported instead of making every command fail (one bad file must not
+    /// stop the boot reload).
+    pub fn load_dir_lenient(dir: &Path) -> Result<(Self, Vec<String>)> {
+        let mut store = TrustStore::default();
+        let mut warnings = Vec::new();
+        let entries = match std::fs::read_dir(dir) {
+            Ok(e) => e,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((store, warnings)),
+            Err(e) => return Err(e).with_context(|| format!("reading {}", dir.display())),
+        };
+        let mut paths: Vec<_> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension().is_some_and(|x| x == "pub"))
+            .collect();
+        paths.sort();
+        for p in paths {
+            let name = p.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            let res = std::fs::read_to_string(&p).map_err(anyhow::Error::from).and_then(|t| store.add(&name, &t));
+            if let Err(e) = res {
+                warnings.push(format!("ignoring trusted key {}: {e:#}", p.display()));
+            }
+        }
+        Ok((store, warnings))
+    }
+
     pub fn load_dir(dir: &Path) -> Result<Self> {
         let mut store = TrustStore::default();
         let entries = match std::fs::read_dir(dir) {
@@ -249,6 +275,17 @@ mod tests {
         store.add("new", &key(2).public_key_file()).unwrap();
         let sig = key(2).sign(b"hello", "x").unwrap();
         assert_eq!(store.verify(b"hello", &sig).unwrap().name, "new");
+    }
+
+    #[test]
+    fn lenient_loading_skips_a_damaged_key() {
+        let t = tempfile::tempdir().unwrap();
+        std::fs::write(t.path().join("good.pub"), key(1).public_key_file()).unwrap();
+        std::fs::write(t.path().join("bad.pub"), "not a key").unwrap();
+        assert!(TrustStore::load_dir(t.path()).is_err());
+        let (store, warnings) = TrustStore::load_dir_lenient(t.path()).unwrap();
+        assert_eq!(store.keys().count(), 1);
+        assert!(warnings[0].contains("bad.pub"));
     }
 
     #[test]

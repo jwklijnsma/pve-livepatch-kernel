@@ -57,6 +57,9 @@ open, and without making you trust a third party.
 - **Safe by default.** Signature, kernel build-id and module hash are checked
   before anything is loaded. A stalled transition is reversed, never forced.
   If a new level misbehaves, the previous one comes back automatically.
+- **Learns from failures.** A level that failed or crashed a host is
+  quarantined and never loaded again automatically; in a cluster only one
+  node loads at a time.
 - **Fits your tooling.** Exit codes, `--json`, Prometheus metrics, hook
   scripts. Ansible decides the order in your fleet; there is no control
   server.

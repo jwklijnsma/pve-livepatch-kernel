@@ -119,10 +119,31 @@ itself.
   reversal also stalls, the agent stops, lists the blocking tasks and leaves
   the node to the operator.
 - **Never worse than before.** If post-checks fail after a completed
-  transition (missing function in sysfs, new `Oops`/`BUG`/`WARNING` in the
-  kernel log, new taint bits other than those the module carries itself (`O`, `E`, `K`), failing hook), the new
-  module is disabled and unloaded and the previous level is restored from
-  the local cache.
+  transition (missing function in sysfs, new taint bits other than those
+  the module carries itself, kernel BUG/Oops/WARNING/lockup/RCU stall,
+  failing hook), the previous level is loaded again from the local cache.
+  That is an atomic replace of the failed one, so the node has a livepatch
+  throughout. Without a previous level the failed one is disabled.
+- **Kernel log.** Only records the kernel itself logged (facility 0) at
+  warning or worse count, and only if the message starts with a known
+  marker. A crashing user process ("traps: … general protection fault",
+  info level) or a tenant naming its process "BUG:" does not back a patch
+  out.
+- **Quarantine.** A load is recorded before it starts. A level that fails,
+  or whose load was interrupted by a crash, reboot or killed agent, is
+  quarantined by module hash: the timer and the boot reload skip it (the
+  boot reload falls back to the highest cached level below it). An
+  explicit `apply` retries it. A run interrupted after a completed
+  transition is recognised and recorded as active.
+- **Cluster.** In a Proxmox VE cluster, a lock directory in pmxcfs
+  (`/etc/pve/priv/lock/hvpatch-load`) lets one node load at a time, even if
+  timers fire together. Without quorum nothing is loaded.
+- **Timer policy.** `delay_hours` (delayed channel) and `pin_level` only
+  hold back the timer; an operator's `apply` is not affected.
+- **Tracing.** kprobes and BPF programs on a function the patch replaces
+  are reported (or refused with `refuse_on_trace_conflict`).
+- **Hooks** run like run-parts, with a timeout, only if owned by root and
+  not writable by others, with `HVPATCH_MODE` = apply, boot or restore.
 - **One owner.** Atomic replace disables all other livepatches. A foreign
   livepatch blocks `apply` unless `--replace-foreign` is given.
 - **Forced leftovers.** A livepatch module that is loaded, referenced and
@@ -140,7 +161,8 @@ itself.
 | `/etc/hvpatch/trusted.d/*.pub` | trusted manifest keys |
 | `/etc/hvpatch/hooks.d/*` | post-transition hooks |
 | `/var/lib/hvpatch/state.json` | per kernel: highest accepted, desired level, hold, phase, last error |
-| `/var/lib/hvpatch/cache/<kver>/<level>/` | module, manifest and signature for boot and restore |
+| `/var/lib/hvpatch/cache/<kver>/<level>/` | module, manifest and signature for boot and restore (three levels kept) |
+| `/run/hvpatch/effective_version`, `fixed_cves` | effective kernel version and CVEs fixed live, for scanners |
 | `/var/lib/prometheus/node-exporter/hvpatch.prom` | metrics |
 
 ## Units

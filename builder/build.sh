@@ -115,10 +115,10 @@ log "signing module"
 rm -f "$OUT/qemu.ok"
 
 log "manifest (unsigned, ring canary)"
-BUILD_ID=$(cat "$SHIPPED/build-id" 2>/dev/null || true)
+BUILD_ID=$(cat "$SHIPPED/build-id")
 hvpatch-tool manifest --resolved "$OUT/resolved.json" --module "$OUT/$NAME.ko" \
   --level "$LEVEL" --ring canary \
-  ${BUILD_ID:+--build-id "$BUILD_ID"} --functions "$FUNCS" \
+  --build-id "$BUILD_ID" --functions "$FUNCS" \
   --builder-image "$BUILDER_IMAGE" \
   --catalog-commit "$(git -C "$CATALOG" rev-parse HEAD 2>/dev/null || echo unknown)" \
   --out "$OUT/manifest.json"

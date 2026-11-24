@@ -1,3 +1,12 @@
+hvpatch (0.2.1-1) trixie; urgency=medium
+
+  * Robustness from an independent review: tenant-proof kernel log check,
+    quarantine of failed or interrupted levels, restore by atomic replace,
+    hook timeouts and permission checks, cluster-wide lock, delay and pin
+    for the timer, effective version for scanners.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Tue, 24 Nov 2026 13:33:49 +0000
+
 hvpatch (0.2.0-1) trixie; urgency=medium
 
   * Renamed from pve-klp. Conflicts with and replaces pve-klp and takes over

@@ -39,6 +39,26 @@ impl Phase {
     }
 }
 
+/// A load that has started but not finished. If it is still recorded when
+/// the agent starts, the host crashed, rebooted or the agent was killed
+/// while loading.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Attempt {
+    pub level: u32,
+    pub sha256: String,
+    pub module: String,
+    pub started: DateTime<Utc>,
+}
+
+/// A module that failed or was interrupted. The timer and the boot unit do
+/// not load it again; an explicit `apply` retries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Quarantine {
+    pub level: u32,
+    pub reason: String,
+    pub since: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct KernelState {
@@ -55,6 +75,9 @@ pub struct KernelState {
     pub stuck: bool,
     pub signed_by: Option<String>,
     pub updated: Option<DateTime<Utc>>,
+    pub attempt: Option<Attempt>,
+    /// sha256 of the module -> why it is quarantined.
+    pub quarantined: BTreeMap<String, Quarantine>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -69,7 +92,13 @@ const MAX_KERNELS: usize = 16;
 impl State {
     pub fn load(path: &Path) -> Result<Self> {
         match std::fs::read(path) {
-            Ok(b) => serde_json::from_slice(&b).with_context(|| format!("parsing {}", path.display())),
+            Ok(b) => serde_json::from_slice(&b).with_context(|| {
+                format!(
+                    "parsing {}. The file is damaged; hvpatch will not guess. Move it away to start \
+                     fresh (this loses the anti-rollback history and quarantine of this node)",
+                    path.display()
+                )
+            }),
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::default()),
             Err(e) => Err(e).with_context(|| format!("reading {}", path.display())),
         }
@@ -115,6 +144,10 @@ pub fn write_atomic(path: &Path, data: &[u8]) -> Result<()> {
     tmp.as_file().set_permissions(std::fs::Permissions::from_mode(0o644))?;
     tmp.as_file().sync_all()?;
     tmp.persist(path).map_err(|e| e.error).with_context(|| format!("renaming to {}", path.display()))?;
+    // Make the rename itself durable (power loss right after an update).
+    if let Ok(d) = std::fs::File::open(dir) {
+        let _ = d.sync_all();
+    }
     Ok(())
 }
 

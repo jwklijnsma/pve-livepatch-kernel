@@ -33,3 +33,29 @@ ring = "stable"
 # state_dir = "/var/lib/hvpatch"
 # http_timeout = 300
 # allow_http = false
+
+# Seconds a hook may run before it is killed (and counts as failed).
+# hook_timeout = 120
+
+# Seconds the boot reload waits for another hvpatch run (e.g. the timer).
+# boot_lock_wait = 300
+
+# Proxmox VE cluster: only one node loads a livepatch at a time, using a
+# cluster-wide lock in pmxcfs (/etc/pve/priv/lock). Without quorum nothing
+# is loaded. Set to false to let nodes load independently.
+# cluster_lock = true
+
+# The timer applies a level only this many hours after it was built (a
+# delayed channel). An explicit `hvpatch apply` ignores the delay.
+# delay_hours = 0
+
+# The timer never goes beyond this level; an explicit `apply` can.
+# pin_level = 3
+
+# Refuse to load when kprobes or BPF programs are attached to a function the
+# livepatch replaces. Default: load and warn.
+# refuse_on_trace_conflict = false
+
+# Effective kernel version and fixed CVEs for vulnerability scanners:
+# <run_dir>/effective_version (e.g. "7.3.4-1-pve+hvpatch.2") and fixed_cves.
+# run_dir = "/run/hvpatch"

@@ -68,7 +68,18 @@ impl Repo for FileRepo {
             Ok(m) if m.len() > max => return Err(anyhow::anyhow!("{rel} exceeds {max} bytes").into()),
             Ok(_) => {}
         }
-        Ok(std::fs::read(&p).with_context(|| format!("reading {}", p.display()))?)
+        // The file may grow between stat and read: never read more than max.
+        use std::io::Read;
+        let mut out = Vec::new();
+        std::fs::File::open(&p)
+            .with_context(|| format!("reading {}", p.display()))?
+            .take(max + 1)
+            .read_to_end(&mut out)
+            .with_context(|| format!("reading {}", p.display()))?;
+        if out.len() as u64 > max {
+            return Err(anyhow::anyhow!("{rel} exceeds {max} bytes").into());
+        }
+        Ok(out)
     }
 
     fn describe(&self) -> String {
@@ -89,7 +100,9 @@ impl Repo for HttpRepo {
         let url = format!("{}/{rel}", self.base);
         let mut resp = match self.agent.get(&url).call() {
             Ok(r) => r,
-            Err(ureq::Error::StatusCode(404)) => return Err(RepoError::NotFound(rel.into())),
+            // Object stores (S3 and compatible) answer 403 for a missing key
+            // when listing is not allowed.
+            Err(ureq::Error::StatusCode(404 | 403 | 410)) => return Err(RepoError::NotFound(rel.into())),
             Err(e) => return Err(anyhow::Error::from(e).context(format!("GET {url}")).into()),
         };
         let body =

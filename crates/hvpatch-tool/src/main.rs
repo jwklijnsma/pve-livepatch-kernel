@@ -120,9 +120,11 @@ enum Cmd {
         level: u32,
         #[arg(long)]
         ring: String,
-        /// GNU build-id of the shipped vmlinux (from /sys/kernel/notes of a booted test VM).
+        /// GNU build-id of the shipped vmlinux (fetch-shipped.sh reads it from
+        /// the vmlinuz; the QEMU stage confirms it). Agents refuse manifests
+        /// without one.
         #[arg(long)]
-        build_id: Option<String>,
+        build_id: String,
         /// Patched functions from `objtool klp diff` (object:function per line).
         #[arg(long)]
         functions: PathBuf,
@@ -357,7 +359,7 @@ fn run(cli: Cli) -> Result<bool> {
             let m = Manifest {
                 format: FORMAT_VERSION,
                 kernel: r.kernel.clone(),
-                kernel_build_id: build_id.map(|b| b.to_lowercase()),
+                kernel_build_id: Some(build_id.to_lowercase()),
                 level,
                 ring,
                 module: module.file_name().context("module path")?.to_string_lossy().into_owned(),
@@ -464,6 +466,9 @@ fn check_manifest(manifest: &Path, resolved: &Path, module: &Path, qemu_ok: Opti
         }
         if get("module_sha256").as_deref() != Some(m.sha256.as_str()) {
             errs.push("qemu.ok was produced for a different module".into());
+        }
+        if m.kernel_build_id.is_none() {
+            errs.push("manifest is not bound to a kernel build-id; agents refuse it".into());
         }
         match (get("build_id"), &m.kernel_build_id) {
             (Some(q), Some(b)) if q.eq_ignore_ascii_case(b) => {}

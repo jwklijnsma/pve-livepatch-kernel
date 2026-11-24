@@ -6,14 +6,17 @@
 //! * `force` is never written. A stuck transition is reversed; if the
 //!   reversal is stuck too, the agent stops and reports.
 //! * A node is never left worse than before: if a new level misbehaves
-//!   after its transition, it is disabled and the previous level is
-//!   restored from the local cache.
+//!   after its transition, the previous level is put back by atomic
+//!   replace, so the node has a livepatch throughout.
+//! * A level that failed, or whose load was interrupted (crash, reboot,
+//!   killed agent), is quarantined: neither the timer nor the boot unit
+//!   loads it again. Only an explicit `apply` retries it.
 
 use std::cell::RefCell;
 use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, anyhow};
 use chrono::{DateTime, Utc};
@@ -23,16 +26,22 @@ use klp_core::policy::{self, Decision, Mode, NodeFacts};
 use klp_core::sig::TrustStore;
 use sha2::{Digest, Sha256};
 
+use crate::cluster::ClusterLock;
 use crate::config::Config;
-use crate::kernel::{KernelOps, is_bad_kmsg, taint};
+use crate::kernel::{KernelOps, KmsgRecord, is_bad_kmsg, taint};
 use crate::repo::{Repo, RepoError};
-use crate::state::{Phase, State, write_atomic};
+use crate::state::{Attempt, Phase, Quarantine, State, write_atomic};
 
 const MAX_MANIFEST: u64 = 1 << 20;
 const MAX_SIGNATURE: u64 = 64 << 10;
-const MAX_MODULE: u64 = 256 << 20;
+/// Livepatch modules are a few MB; anything this big is not one.
+const MAX_MODULE: u64 = 32 << 20;
 const POLL: Duration = Duration::from_millis(500);
 const BLOCKER_REPORT_EVERY: Duration = Duration::from_secs(15);
+const CLUSTER_LOCK_POLL: Duration = Duration::from_secs(5);
+const CLUSTER_LOCK_MAX_WAIT: Duration = Duration::from_secs(15 * 60);
+/// Levels kept in the local cache per kernel (current, previous, one more).
+const CACHE_KEEP_LEVELS: usize = 3;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Outcome {
@@ -85,8 +94,27 @@ pub struct ApplyOpts {
     pub level: Option<u32>,
     /// Allow atomic replace to also replace livepatches not built by us.
     pub replace_foreign: bool,
-    /// Started by an operator (clears a hold), not by the timer.
+    /// Started by an operator (clears a hold, retries a quarantined level,
+    /// ignores delay and pin), not by the timer.
     pub explicit: bool,
+}
+
+/// Why a module is being loaded; passed to hooks as `HVPATCH_MODE`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LoadKind {
+    Apply,
+    Boot,
+    Restore,
+}
+
+impl LoadKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LoadKind::Apply => "apply",
+            LoadKind::Boot => "boot",
+            LoadKind::Restore => "restore",
+        }
+    }
 }
 
 /// A manifest whose signature has been checked, plus who signed it.
@@ -106,6 +134,7 @@ pub struct Agent<K: KernelOps> {
     /// Also print log lines to stderr.
     pub echo: bool,
     log: RefCell<Vec<String>>,
+    cluster: RefCell<Option<ClusterLock>>,
 }
 
 enum Go {
@@ -122,7 +151,16 @@ enum Wait {
 
 impl<K: KernelOps> Agent<K> {
     pub fn new(cfg: Config, kernel: K, repo: Option<Box<dyn Repo>>, trust: TrustStore) -> Self {
-        Self { cfg, kernel, repo, trust, now: Box::new(Utc::now), echo: false, log: RefCell::new(vec![]) }
+        Self {
+            cfg,
+            kernel,
+            repo,
+            trust,
+            now: Box::new(Utc::now),
+            echo: false,
+            log: RefCell::new(vec![]),
+            cluster: RefCell::new(None),
+        }
     }
 
     pub fn log(&self, msg: impl Into<String>) {
@@ -157,6 +195,15 @@ impl<K: KernelOps> Agent<K> {
         state.save(&self.cfg.state_file())
     }
 
+    /// Remember that this module failed so that no automatic run loads it
+    /// again. Saved with the next `save_phase`.
+    fn quarantine(&self, state: &mut State, release: &str, m: &Manifest, reason: &str) {
+        let reason: String = reason.lines().next().unwrap_or(reason).chars().take(300).collect();
+        let k = state.kernel(release);
+        k.attempt = None;
+        k.quarantined.insert(m.sha256.clone(), Quarantine { level: m.level, reason, since: (self.now)() });
+    }
+
     // ------------------------------------------------------------------
     // apply
 
@@ -169,59 +216,258 @@ impl<K: KernelOps> Agent<K> {
             self.log("livepatching is on hold after `hvpatch revert`; run `hvpatch apply` to resume");
             return Ok(Outcome::Skipped("held after revert".into()));
         }
+        self.reconcile(&mut state, &release)?;
         let active = self.preflight(opts.replace_foreign)?;
         let repo = self.repo.as_ref().ok_or_else(|| anyhow!("no repository configured"))?;
 
         let base = format!("v1/{release}/{}", self.cfg.ring);
-        let raw = match repo.get(&format!("{base}/manifest.json"), MAX_MANIFEST) {
-            Ok(b) => b,
-            Err(RepoError::NotFound(_)) => {
+        let v = match self.fetch_verified(repo.as_ref(), &base) {
+            Ok(Some(v)) => v,
+            Ok(None) => {
                 self.log(format!("no livepatch published for {release} in ring {}", self.cfg.ring));
                 return Ok(Outcome::NothingPublished);
             }
-            Err(RepoError::Other(e)) => return Err(e.into()),
+            Err(e) => {
+                let _ = self.save_phase(&mut state, &release, Phase::Failed, Some(e.to_string()));
+                return Err(e);
+            }
         };
-        let sig = repo
-            .get(&format!("{base}/manifest.json.minisig"), MAX_SIGNATURE)
-            .map_err(|e| ApplyError::Rejected(format!("manifest signature missing: {e}")))?;
-
-        let v = self.verify_manifest(raw, &sig).inspect_err(|e| {
-            let _ = self.save_phase(&mut state, &release, Phase::Failed, Some(e.to_string()));
-        })?;
         let m = &v.manifest;
         self.log(format!("manifest {} level {} ring {} signed by {}", m.kernel, m.level, m.ring, v.signer));
 
-        let warnings = match self.decide(m, &state, active.as_ref().map(|a| a.1), Mode::Fetch, opts)? {
+        if let Some(q) = state.get(&release).quarantined.get(&m.sha256).cloned() {
+            if !opts.explicit {
+                let why = format!(
+                    "level {} is quarantined since {}: {}. Run `hvpatch apply` to retry it",
+                    q.level,
+                    q.since.format("%Y-%m-%d %H:%M"),
+                    q.reason
+                );
+                self.log(why.clone());
+                return Ok(Outcome::Skipped(why));
+            }
+            self.log(format!("retrying quarantined level {} on request", q.level));
+            state.kernel(&release).quarantined.remove(&m.sha256);
+            state.save(&self.cfg.state_file())?;
+        }
+        if !opts.explicit {
+            if let Some(pin) = self.cfg.pin_level
+                && m.level > pin
+            {
+                return Ok(Outcome::Skipped(format!("pinned at level {pin}; the repository offers {}", m.level)));
+            }
+            let eligible = m.built + chrono::Duration::hours(self.cfg.delay_hours as i64);
+            if (self.now)() < eligible {
+                return Ok(Outcome::Skipped(format!(
+                    "level {} becomes eligible at {} (delay_hours = {})",
+                    m.level,
+                    eligible.format("%Y-%m-%d %H:%M UTC"),
+                    self.cfg.delay_hours
+                )));
+            }
+        }
+
+        let mut warnings = match self.decide(m, &state, active.as_ref().map(|a| a.1), Mode::Fetch, opts)? {
             Go::Apply(w) => w,
-            Go::AlreadyActive => return Ok(Outcome::AlreadyActive { level: m.level }),
+            Go::AlreadyActive => {
+                self.mark_active(&mut state, &release, m)?;
+                return Ok(Outcome::AlreadyActive { level: m.level });
+            }
             Go::Skip(why) => return Ok(Outcome::Skipped(why)),
         };
         self.save_phase(&mut state, &release, Phase::Fetched, None)?;
 
-        let ko = repo
-            .get(&format!("v1/{release}/{}", m.module), MAX_MODULE)
-            .map_err(|e| ApplyError::Rejected(format!("module download failed: {e}")))?;
-        if sha256_hex(&ko) != m.sha256 {
-            let msg = format!("module {} does not match the manifest hash", m.module);
-            self.save_phase(&mut state, &release, Phase::Failed, Some(msg.clone()))?;
-            return Err(ApplyError::Rejected(msg));
+        let res = self.download_and_activate(&mut state, &release, &v, repo.as_ref(), active.map(|a| a.1));
+        if let Err(e) = &res {
+            self.fail_if_in_progress(&mut state, &release, e);
         }
-        let dir = self.cache_dir(&release, m.level);
-        write_atomic(&dir.join(&m.module), &ko)?;
-        write_atomic(&dir.join("manifest.json"), &v.raw)?;
-        write_atomic(&dir.join("manifest.json.minisig"), v.sig.as_bytes())?;
-
-        let file = self.open_verified_module(m, &release, &dir).inspect_err(|e| {
-            let _ = self.save_phase(&mut state, &release, Phase::Failed, Some(e.to_string()));
-        })?;
-        self.save_phase(&mut state, &release, Phase::Verified, None)?;
-        state.kernel(&release).signed_by = Some(v.signer.clone());
-
-        self.activate(&mut state, &release, m, &file, active.map(|a| a.1), true)?;
+        warnings.extend(res?);
         for w in &warnings {
             self.log(format!("warning: {w}"));
         }
         Ok(Outcome::Applied { level: m.level, warnings })
+    }
+
+    /// Fetch and verify the manifest. A signature that does not match is
+    /// fetched once more: a reader can catch the publisher between writing
+    /// the signature and the manifest.
+    fn fetch_verified(&self, repo: &dyn Repo, base: &str) -> Result<Option<Verified>, ApplyError> {
+        let mut last = None;
+        for attempt in 0..2 {
+            let raw = match repo.get(&format!("{base}/manifest.json"), MAX_MANIFEST) {
+                Ok(b) => b,
+                Err(RepoError::NotFound(_)) => return Ok(None),
+                Err(RepoError::Other(e)) => return Err(e.into()),
+            };
+            let sig = repo
+                .get(&format!("{base}/manifest.json.minisig"), MAX_SIGNATURE)
+                .map_err(|e| ApplyError::Rejected(format!("manifest signature missing: {e}")))?;
+            match self.verify_manifest(raw, &sig) {
+                Ok(v) => return Ok(Some(v)),
+                Err(e) => {
+                    if attempt == 0 {
+                        self.log(format!("{e}; fetching the manifest once more"));
+                        self.kernel.sleep(Duration::from_secs(2));
+                    }
+                    last = Some(e);
+                }
+            }
+        }
+        Err(last.expect("two attempts"))
+    }
+
+    /// Everything after the manifest was accepted. Returns extra warnings.
+    fn download_and_activate(
+        &self,
+        state: &mut State,
+        release: &str,
+        v: &Verified,
+        repo: &dyn Repo,
+        previous: Option<u32>,
+    ) -> Result<Vec<String>, ApplyError> {
+        let m = &v.manifest;
+        let ko = repo
+            .get(&format!("v1/{release}/{}", m.module), MAX_MODULE)
+            .map_err(|e| ApplyError::Rejected(format!("module download failed: {e}")))?;
+        if sha256_hex(&ko) != m.sha256 {
+            return Err(ApplyError::Rejected(format!("module {} does not match the manifest hash", m.module)));
+        }
+        let dir = self.cache_dir(release, m.level);
+        write_atomic(&dir.join(&m.module), &ko)?;
+        write_atomic(&dir.join("manifest.json"), &v.raw)?;
+        write_atomic(&dir.join("manifest.json.minisig"), v.sig.as_bytes())?;
+
+        let file = self.open_verified_module(m, release, &dir)?;
+        self.save_phase(state, release, Phase::Verified, None)?;
+        state.kernel(release).signed_by = Some(v.signer.clone());
+
+        let mut warnings = Vec::new();
+        let conflicts = self.trace_conflicts(m);
+        if !conflicts.is_empty() {
+            let msg = format!(
+                "kprobes or BPF programs are attached to function(s) this livepatch replaces: {}. \
+                 kretprobes conflict with livepatches, and kprobes in the old function stop firing",
+                conflicts.join(", ")
+            );
+            if self.cfg.refuse_on_trace_conflict {
+                return Err(ApplyError::Precondition(msg));
+            }
+            warnings.push(msg);
+        }
+
+        let lock = self.acquire_cluster_lock()?;
+        *self.cluster.borrow_mut() = lock;
+        let res = self.activate(state, release, m, &file, previous, LoadKind::Apply);
+        self.cluster.borrow_mut().take();
+        res?;
+        Ok(warnings)
+    }
+
+    /// After an error, never leave the stored phase at "in progress".
+    fn fail_if_in_progress(&self, state: &mut State, release: &str, e: &ApplyError) {
+        if matches!(state.get(release).phase, Phase::Fetched | Phase::Verified | Phase::Loading) {
+            state.kernel(release).attempt = None;
+            let _ = self.save_phase(state, release, Phase::Failed, Some(e.to_string()));
+        }
+    }
+
+    /// The kernel says `m` is active; make the stored state agree.
+    fn mark_active(&self, state: &mut State, release: &str, m: &Manifest) -> anyhow::Result<()> {
+        let k = state.get(release);
+        if k.phase == Phase::Active && k.desired_level == Some(m.level) && k.highest_accepted >= m.level && !k.held {
+            return Ok(());
+        }
+        let k = state.kernel(release);
+        k.highest_accepted = k.highest_accepted.max(m.level);
+        k.desired_level = Some(m.level);
+        k.held = false;
+        k.attempt = None;
+        self.save_phase(state, release, Phase::Active, None)?;
+        self.write_runtime_files(release, Some(m));
+        Ok(())
+    }
+
+    /// A load recorded as started but never finished: the host crashed or
+    /// rebooted, or the agent was killed.
+    fn reconcile(&self, state: &mut State, release: &str) -> Result<(), ApplyError> {
+        let Some(a) = state.get(release).attempt else { return Ok(()) };
+        match self.kernel.patch(&a.module)? {
+            Some(p) if p.enabled && !p.transition => {
+                self.log(format!(
+                    "the load of level {} completed after an interrupted run; recording it as active \
+                     (its post-checks were not repeated)",
+                    a.level
+                ));
+                let k = state.kernel(release);
+                k.attempt = None;
+                k.highest_accepted = k.highest_accepted.max(a.level);
+                k.desired_level = Some(a.level);
+                self.save_phase(state, release, Phase::Active, None)?;
+            }
+            // Still in transition: preflight() reports it.
+            Some(_) => {}
+            None => {
+                let reason = format!(
+                    "loading level {} was interrupted at {} (host crash, reboot or the agent was killed)",
+                    a.level,
+                    a.started.format("%Y-%m-%d %H:%M:%S UTC")
+                );
+                self.log(format!("{reason}; quarantining it"));
+                let k = state.kernel(release);
+                k.attempt = None;
+                k.quarantined.insert(
+                    a.sha256.clone(),
+                    Quarantine { level: a.level, reason: reason.clone(), since: (self.now)() },
+                );
+                self.save_phase(state, release, Phase::Failed, Some(reason))?;
+            }
+        }
+        Ok(())
+    }
+
+    fn acquire_cluster_lock(&self) -> Result<Option<ClusterLock>, ApplyError> {
+        if !self.cfg.cluster_lock || !self.cfg.cluster_lock_dir.is_dir() {
+            return Ok(None);
+        }
+        let mut waited = Duration::ZERO;
+        let mut told = false;
+        loop {
+            match ClusterLock::try_acquire(&self.cfg.cluster_lock_dir) {
+                Ok(Some(l)) => return Ok(Some(l)),
+                Ok(None) if waited >= CLUSTER_LOCK_MAX_WAIT => {
+                    return Err(ApplyError::Precondition(format!(
+                        "another node of the cluster has been loading a livepatch for over {} minutes \
+                         ({} exists); try again later",
+                        CLUSTER_LOCK_MAX_WAIT.as_secs() / 60,
+                        self.cfg.cluster_lock_dir.join(crate::cluster::LOCK_NAME).display()
+                    )));
+                }
+                Ok(None) => {
+                    if !told {
+                        self.log("another node of the cluster is loading a livepatch; waiting for it");
+                        told = true;
+                    }
+                    self.kernel.sleep(CLUSTER_LOCK_POLL);
+                    waited += CLUSTER_LOCK_POLL;
+                }
+                Err(e) => return Err(ApplyError::Precondition(format!("{e:#}"))),
+            }
+        }
+    }
+
+    /// Functions this patch replaces that kprobes/BPF are attached to.
+    fn trace_conflicts(&self, m: &Manifest) -> Vec<String> {
+        let traced = self.kernel.traced_functions().unwrap_or_default();
+        let mut out: Vec<String> = m
+            .fixes
+            .iter()
+            .flat_map(|f| f.functions.iter())
+            .map(|f| strip_sympos(f.split_once(':').map(|(_, n)| n).unwrap_or(f)).to_owned())
+            .filter(|f| traced.iter().any(|t| t == f))
+            .collect();
+        out.sort();
+        out.dedup();
+        out
     }
 
     fn decide(
@@ -280,7 +526,7 @@ impl<K: KernelOps> Agent<K> {
         let path = dir.join(&m.module);
         let mut file = File::open(&path).with_context(|| format!("opening {}", path.display()))?;
         let mut bytes = Vec::new();
-        file.read_to_end(&mut bytes).context("reading module")?;
+        (&mut file).take(MAX_MODULE + 1).read_to_end(&mut bytes).context("reading module")?;
         if sha256_hex(&bytes) != m.sha256 {
             return Err(ApplyError::Rejected(format!(
                 "cached module {} does not match the manifest hash",
@@ -336,7 +582,10 @@ impl<K: KernelOps> Agent<K> {
             if !m.is_livepatch() || patches.iter().any(|p| p.name == m.name) {
                 continue;
             }
-            if m.refcnt > 0 {
+            // The kernel frees a disabled or replaced patch asynchronously:
+            // the sysfs entry goes first, the module reference a moment
+            // later. Look again before calling it a forced leftover.
+            if m.refcnt > 0 && self.still_referenced(&m.name)? {
                 return Err(ApplyError::Precondition(format!(
                     "module {} is a livepatch without sysfs entry that is still referenced; this is \
                      what a forced transition leaves behind. Do not load further patches; reboot.",
@@ -351,9 +600,20 @@ impl<K: KernelOps> Agent<K> {
         Ok(active)
     }
 
+    fn still_referenced(&self, module: &str) -> anyhow::Result<bool> {
+        for _ in 0..6 {
+            self.kernel.sleep(POLL);
+            let refcnt = self.kernel.modules()?.into_iter().find(|m| m.name == module).map(|m| m.refcnt);
+            if refcnt.unwrap_or(0) == 0 {
+                return Ok(false);
+            }
+        }
+        Ok(true)
+    }
+
     /// Load, wait for the transition, run post-checks. On any failure the
-    /// patch is backed out and, if it had replaced an older level, that
-    /// level is restored from cache.
+    /// module is quarantined and backed out; if it had replaced an older
+    /// level, that level is put back by atomic replace.
     fn activate(
         &self,
         state: &mut State,
@@ -361,7 +621,7 @@ impl<K: KernelOps> Agent<K> {
         m: &Manifest,
         file: &File,
         previous: Option<u32>,
-        restore_on_failure: bool,
+        kind: LoadKind,
     ) -> Result<(), ApplyError> {
         let name = &m.module_name;
         let taint_before = self.kernel.tainted()?;
@@ -372,20 +632,28 @@ impl<K: KernelOps> Agent<K> {
                 None
             }
         };
+        state.kernel(release).attempt =
+            Some(Attempt { level: m.level, sha256: m.sha256.clone(), module: name.clone(), started: (self.now)() });
         self.save_phase(state, release, Phase::Loading, None)?;
-        self.log(format!("loading {name}"));
+        self.log(format!("loading {name} ({})", kind.as_str()));
 
         if let Err(e) = self.kernel.load_module(file) {
             let mut msg = e.to_string();
             if let Some(k) = kmsg.as_mut() {
                 // Only what concerns this load; unrelated drivers log too.
-                let lines: Vec<String> =
-                    k.drain().unwrap_or_default().into_iter().filter(|l| is_load_related(l, name)).collect();
+                let lines: Vec<String> = k
+                    .drain()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|r| is_load_related(&r.msg, name))
+                    .map(|r| r.msg)
+                    .collect();
                 if !lines.is_empty() {
                     msg.push_str("\nkernel log:\n  ");
                     msg.push_str(&lines.join("\n  "));
                 }
             }
+            self.quarantine(state, release, m, &msg);
             self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
             return Err(ApplyError::Failed(msg));
         }
@@ -394,6 +662,7 @@ impl<K: KernelOps> Agent<K> {
             Wait::Done => {}
             Wait::Gone => {
                 let msg = format!("{name} disappeared during its transition");
+                self.quarantine(state, release, m, &msg);
                 self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
                 return Err(ApplyError::Failed(msg));
             }
@@ -401,6 +670,12 @@ impl<K: KernelOps> Agent<K> {
                 let mut msg = format!(
                     "transition of {name} did not finish within {} s; blocking tasks:\n{blockers}",
                     self.cfg.transition_timeout
+                );
+                self.quarantine(
+                    state,
+                    release,
+                    m,
+                    &format!("transition did not finish within {} s", self.cfg.transition_timeout),
                 );
                 // Reversing an unfinished transition keeps the previous
                 // level active, so no restore is needed here.
@@ -420,32 +695,55 @@ impl<K: KernelOps> Agent<K> {
             }
         }
 
-        if let Err(why) = self.post_checks(m, taint_before, kmsg.as_deref_mut()) {
+        if let Err(why) = self.post_checks(m, taint_before, kmsg.as_deref_mut(), kind) {
             let mut msg = format!("{name} activated, but post-checks failed: {why}");
             self.log(&msg);
-            if let Err(e) = self.back_out(name) {
-                msg.push_str(&format!("\n{e}"));
-                self.save_stuck(state, release, msg.clone())?;
-                return Err(ApplyError::Failed(msg));
-            }
-            msg.push_str(&format!("\n{name} was disabled and unloaded"));
-            if let (Some(prev), true) = (previous, restore_on_failure) {
-                match self.restore(state, release, prev) {
-                    Ok(()) => msg.push_str(&format!("; level {prev} was restored from cache")),
-                    Err(e) => msg.push_str(&format!("; restoring level {prev} failed: {e}")),
+            self.quarantine(state, release, m, &format!("post-checks failed: {why}"));
+            let mut stuck = false;
+            let restored = match (previous, kind) {
+                (Some(prev), LoadKind::Apply) => match self.restore(state, release, prev) {
+                    Ok(()) => {
+                        msg.push_str(&format!(
+                            "\nlevel {prev} was put back by atomic replace; the node had a livepatch throughout"
+                        ));
+                        true
+                    }
+                    Err(e) => {
+                        msg.push_str(&format!("\nputting level {prev} back failed: {e}"));
+                        false
+                    }
+                },
+                _ => false,
+            };
+            if !restored && self.kernel.patch(name)?.is_some() {
+                match self.back_out(name) {
+                    Ok(()) => msg.push_str(&format!("\n{name} was disabled and unloaded")),
+                    Err(e) => {
+                        msg.push_str(&format!("\n{e}"));
+                        stuck = true;
+                    }
                 }
             }
-            self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
+            // The restore saved its own state; this records the failure.
+            self.quarantine(state, release, m, &format!("post-checks failed: {why}"));
+            if stuck {
+                self.save_stuck(state, release, msg.clone())?;
+            } else {
+                self.save_phase(state, release, Phase::Failed, Some(msg.clone()))?;
+            }
             return Err(ApplyError::Failed(msg));
         }
 
         self.cleanup_replaced(name);
         let k = state.kernel(release);
+        k.attempt = None;
         k.highest_accepted = k.highest_accepted.max(m.level);
         k.desired_level = Some(m.level);
         k.held = false;
         self.save_phase(state, release, Phase::Active, None)?;
         self.log(format!("{name} is active (level {})", m.level));
+        self.prune_cache(state, release);
+        self.write_runtime_files(release, Some(m));
         Ok(())
     }
 
@@ -454,6 +752,7 @@ impl<K: KernelOps> Agent<K> {
         m: &Manifest,
         taint_before: u64,
         kmsg: Option<&mut (dyn crate::kernel::KmsgWatch + 'static)>,
+        kind: LoadKind,
     ) -> Result<(), String> {
         let name = &m.module_name;
         match self.kernel.patch(name).map_err(|e| e.to_string())? {
@@ -484,10 +783,10 @@ impl<K: KernelOps> Agent<K> {
             self.kernel.sleep(Duration::from_secs(self.cfg.settle_time));
         }
         if let Some(k) = kmsg {
-            let bad: Vec<String> =
-                k.drain().map_err(|e| e.to_string())?.into_iter().filter(|l| is_bad_kmsg(l)).collect();
+            let bad: Vec<KmsgRecord> = k.drain().map_err(|e| e.to_string())?.into_iter().filter(is_bad_kmsg).collect();
             if !bad.is_empty() {
-                return Err(format!("kernel log since loading:\n  {}", bad.join("\n  ")));
+                let lines: Vec<&str> = bad.iter().map(|r| r.msg.as_str()).collect();
+                return Err(format!("kernel log since loading:\n  {}", lines.join("\n  ")));
             }
         }
         // Flags the livepatch module itself reports (/sys/module/<m>/taint,
@@ -506,21 +805,69 @@ impl<K: KernelOps> Agent<K> {
         if new_taint != 0 {
             return Err(format!("kernel gained taint flags {}", taint::letters(new_taint)));
         }
-        self.run_hooks(m)
+        self.run_hooks(m, kind)
     }
 
-    fn run_hooks(&self, m: &Manifest) -> Result<(), String> {
+    /// Run the executables in hooks_dir like run-parts: in name order, only
+    /// names of letters, digits, `-` and `_` (no `*.dpkg-old`, no backups),
+    /// each with a timeout. A hook that root does not own or that others
+    /// can write is refused, because it would run as root.
+    fn run_hooks(&self, m: &Manifest, kind: LoadKind) -> Result<(), String> {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use std::os::unix::process::CommandExt;
         let Ok(entries) = std::fs::read_dir(&self.cfg.hooks_dir) else { return Ok(()) };
-        let mut hooks: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| is_executable(p)).collect();
+        let mut hooks: Vec<PathBuf> = entries
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| {
+                p.file_name().and_then(|n| n.to_str()).is_some_and(|n| {
+                    !n.is_empty() && n.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+                })
+            })
+            .collect();
         hooks.sort();
+        // SAFETY: geteuid has no preconditions.
+        let euid = unsafe { libc::geteuid() };
+        let timeout = Duration::from_secs(self.cfg.hook_timeout);
         for h in hooks {
+            let Ok(meta) = std::fs::metadata(&h) else { continue };
+            if !meta.is_file() || meta.permissions().mode() & 0o111 == 0 {
+                continue;
+            }
+            if meta.uid() != 0 && meta.uid() != euid {
+                return Err(format!("hook {} is not owned by root; refusing to run it", h.display()));
+            }
+            if meta.mode() & 0o022 != 0 {
+                return Err(format!("hook {} is writable by group or others; refusing to run it", h.display()));
+            }
             self.log(format!("running hook {}", h.display()));
-            let status = std::process::Command::new(&h)
+            let mut child = std::process::Command::new(&h)
                 .env("HVPATCH_KERNEL", &m.kernel)
                 .env("HVPATCH_LEVEL", m.level.to_string())
                 .env("HVPATCH_MODULE", &m.module_name)
-                .status()
+                .env("HVPATCH_MODE", kind.as_str())
+                .stdin(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
                 .map_err(|e| format!("hook {}: {e}", h.display()))?;
+            let start = Instant::now();
+            let status = loop {
+                match child.try_wait() {
+                    Ok(Some(st)) => break st,
+                    Ok(None) if start.elapsed() >= timeout => {
+                        // SAFETY: kill the hook's own process group.
+                        unsafe { libc::kill(-(child.id() as i32), libc::SIGKILL) };
+                        let _ = child.wait();
+                        return Err(format!(
+                            "hook {} did not finish within {} s and was killed",
+                            h.display(),
+                            self.cfg.hook_timeout
+                        ));
+                    }
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    Err(e) => return Err(format!("hook {}: {e}", h.display())),
+                }
+            };
             if !status.success() {
                 return Err(format!("hook {} failed with {status}", h.display()));
             }
@@ -530,6 +877,7 @@ impl<K: KernelOps> Agent<K> {
 
     fn wait_transition(&self, name: &str, target: bool) -> anyhow::Result<Wait> {
         let timeout = self.cfg.transition_timeout();
+        let start = Instant::now();
         let mut waited = Duration::ZERO;
         let mut last_report = Duration::ZERO;
         loop {
@@ -538,7 +886,9 @@ impl<K: KernelOps> Agent<K> {
                 Some(p) if !p.transition => return Ok(Wait::Done),
                 Some(_) => {}
             }
-            if waited >= timeout {
+            // Wall clock counts too: scanning /proc for blockers takes time.
+            let elapsed = waited.max(start.elapsed());
+            if elapsed >= timeout {
                 let tasks = self.kernel.blocking_tasks(target).unwrap_or_default();
                 let list = if tasks.is_empty() {
                     "  (none found)".to_owned()
@@ -547,15 +897,18 @@ impl<K: KernelOps> Agent<K> {
                 };
                 return Ok(Wait::Timeout(list));
             }
-            if waited >= last_report + BLOCKER_REPORT_EVERY {
-                last_report = waited;
+            if elapsed >= last_report + BLOCKER_REPORT_EVERY {
+                last_report = elapsed;
                 let tasks = self.kernel.blocking_tasks(target).unwrap_or_default();
                 let names: Vec<String> = tasks.iter().take(10).map(|t| format!("{}[{}]", t.comm, t.tid)).collect();
                 self.log(format!(
                     "{name}: transition still running after {} s, waiting for: {}",
-                    waited.as_secs(),
+                    elapsed.as_secs(),
                     names.join(" ")
                 ));
+            }
+            if let Some(l) = self.cluster.borrow_mut().as_mut() {
+                l.refresh();
             }
             self.kernel.sleep(POLL);
             waited += POLL;
@@ -621,16 +974,25 @@ impl<K: KernelOps> Agent<K> {
         self.log("some replaced modules are still loaded; they are inactive and go away with the next reboot");
     }
 
-    /// Reload a previously accepted level from the local cache.
+    /// Put a previously accepted level back while the failed one is still
+    /// active: loading it replaces the failed one atomically, so the node
+    /// is never without a livepatch.
     fn restore(&self, state: &mut State, release: &str, level: u32) -> Result<(), ApplyError> {
         let dir = self.cache_dir(release, level);
         let v = self.load_cached(&dir)?;
+        if state.get(release).quarantined.contains_key(&v.manifest.sha256) {
+            return Err(ApplyError::Precondition(format!("level {level} is quarantined itself")));
+        }
+        match self.decide(&v.manifest, state, None, Mode::Restore, &ApplyOpts::default())? {
+            Go::Apply(_) => {}
+            _ => return Err(ApplyError::Precondition(format!("level {level} cannot be restored"))),
+        }
         let file = self.open_verified_module(&v.manifest, release, &dir)?;
-        self.log(format!("restoring level {level}"));
-        // After atomic replace the old module is still loaded, just without
-        // a patch. preflight() unloads such leftovers of ours.
+        self.log(format!("putting level {level} back by atomic replace"));
+        // The old module is still loaded without a patch after it was
+        // replaced; preflight() unloads such leftovers of ours.
         self.preflight(true)?;
-        self.activate(state, release, &v.manifest, &file, None, false)
+        self.activate(state, release, &v.manifest, &file, None, LoadKind::Restore)
     }
 
     fn load_cached(&self, dir: &Path) -> Result<Verified, ApplyError> {
@@ -640,42 +1002,105 @@ impl<K: KernelOps> Agent<K> {
         self.verify_manifest(raw, &sig)
     }
 
+    /// Cached levels for this kernel, highest first.
+    fn cached_levels(&self, release: &str) -> Vec<u32> {
+        let mut levels: Vec<u32> = std::fs::read_dir(self.cfg.cache_dir().join(release))
+            .map(|d| d.flatten().filter_map(|e| e.file_name().to_str()?.parse().ok()).collect())
+            .unwrap_or_default();
+        levels.sort_unstable_by(|a, b| b.cmp(a));
+        levels
+    }
+
+    /// Keep a few levels of the running kernel and nothing of kernels the
+    /// state no longer knows.
+    fn prune_cache(&self, state: &State, release: &str) {
+        let root = self.cfg.cache_dir();
+        if let Ok(kernels) = std::fs::read_dir(&root) {
+            for k in kernels.flatten() {
+                let name = k.file_name().to_string_lossy().into_owned();
+                if name != release && !state.kernels.contains_key(&name) {
+                    let _ = std::fs::remove_dir_all(k.path());
+                }
+            }
+        }
+        for level in self.cached_levels(release).into_iter().skip(CACHE_KEEP_LEVELS) {
+            let _ = std::fs::remove_dir_all(self.cache_dir(release, level));
+        }
+    }
+
+    /// `<run_dir>/effective_version` and `fixed_cves`, for vulnerability
+    /// scanners and inventory tools. Best effort.
+    fn write_runtime_files(&self, release: &str, m: Option<&Manifest>) {
+        let dir = &self.cfg.run_dir;
+        let res = match m {
+            Some(m) => {
+                let ids: Vec<&str> = m.fixes.iter().map(|f| f.id.as_str()).collect();
+                write_atomic(&dir.join("effective_version"), format!("{release}+hvpatch.{}\n", m.level).as_bytes())
+                    .and_then(|_| write_atomic(&dir.join("fixed_cves"), format!("{}\n", ids.join("\n")).as_bytes()))
+            }
+            None => {
+                let _ = std::fs::remove_file(dir.join("effective_version"));
+                let _ = std::fs::remove_file(dir.join("fixed_cves"));
+                Ok(())
+            }
+        };
+        if let Err(e) = res {
+            self.log(format!("warning: cannot write {}: {e:#}", dir.display()));
+        }
+    }
+
     // ------------------------------------------------------------------
     // boot
 
     /// After a reboot into the same kernel: reload the level that was
-    /// active before, from the local cache, without network.
+    /// active before, from the local cache, without network. A quarantined
+    /// level is skipped in favour of the highest cached one below it.
     pub fn boot(&self) -> Result<Outcome, ApplyError> {
         let release = self.kernel.release()?;
         let mut state = State::load(&self.cfg.state_file())?;
-        let ks = state.get(&release);
-        let Some(level) = ks.desired_level else {
+        if state.get(&release).held {
+            return Ok(Outcome::Skipped("held after revert".into()));
+        }
+        self.reconcile(&mut state, &release)?;
+        let Some(desired) = state.get(&release).desired_level else {
             self.log(format!("nothing to reload for {release}"));
             return Ok(Outcome::NothingToLoad);
         };
-        if ks.held {
-            return Ok(Outcome::Skipped("held after revert".into()));
-        }
         let active = self.preflight(false)?;
-        let dir = self.cache_dir(&release, level);
-        if !dir.join("manifest.json").exists() {
-            self.log(format!("level {level} for {release} is not in the cache"));
-            return Ok(Outcome::NothingToLoad);
+        for level in self.cached_levels(&release).into_iter().filter(|l| *l <= desired) {
+            let dir = self.cache_dir(&release, level);
+            let Ok(v) = self.load_cached(&dir) else { continue };
+            if let Some(q) = state.get(&release).quarantined.get(&v.manifest.sha256) {
+                self.log(format!("level {level} is quarantined ({}); not reloading it", q.reason));
+                continue;
+            }
+            let mode = if level == desired { Mode::BootFromCache } else { Mode::Restore };
+            if mode == Mode::Restore {
+                self.log(format!("reloading level {level} instead of {desired}"));
+            }
+            let warnings =
+                match self.decide(&v.manifest, &state, active.as_ref().map(|a| a.1), mode, &ApplyOpts::default())? {
+                    Go::Apply(w) => w,
+                    Go::AlreadyActive => {
+                        self.mark_active(&mut state, &release, &v.manifest)?;
+                        return Ok(Outcome::AlreadyActive { level });
+                    }
+                    Go::Skip(why) => return Ok(Outcome::Skipped(why)),
+                };
+            let file = self.open_verified_module(&v.manifest, &release, &dir)?;
+            let res =
+                self.activate(&mut state, &release, &v.manifest, &file, active.as_ref().map(|a| a.1), LoadKind::Boot);
+            if let Err(e) = &res {
+                self.fail_if_in_progress(&mut state, &release, e);
+            }
+            res?;
+            for w in &warnings {
+                self.log(format!("warning: {w}"));
+            }
+            return Ok(Outcome::Applied { level, warnings });
         }
-        let v = self.load_cached(&dir)?;
-        let opts = ApplyOpts::default();
-        let warnings =
-            match self.decide(&v.manifest, &state, active.as_ref().map(|a| a.1), Mode::BootFromCache, &opts)? {
-                Go::Apply(w) => w,
-                Go::AlreadyActive => return Ok(Outcome::AlreadyActive { level }),
-                Go::Skip(why) => return Ok(Outcome::Skipped(why)),
-            };
-        let file = self.open_verified_module(&v.manifest, &release, &dir)?;
-        self.activate(&mut state, &release, &v.manifest, &file, active.map(|a| a.1), false)?;
-        for w in &warnings {
-            self.log(format!("warning: {w}"));
-        }
-        Ok(Outcome::Applied { level, warnings })
+        self.log(format!("no usable cached level for {release}"));
+        Ok(Outcome::NothingToLoad)
     }
 
     // ------------------------------------------------------------------
@@ -692,6 +1117,7 @@ impl<K: KernelOps> Agent<K> {
             k.held = true;
             k.desired_level = None;
         }
+        self.write_runtime_files(&release, None);
         if ours.is_empty() {
             self.save_phase(&mut state, &release, Phase::Reverted, None)?;
             return Ok(Outcome::NothingActive);
@@ -740,9 +1166,4 @@ fn strip_sympos(f: &str) -> &str {
 
 pub fn sha256_hex(b: &[u8]) -> String {
     hex::encode(Sha256::digest(b))
-}
-
-fn is_executable(p: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-    std::fs::metadata(p).map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0).unwrap_or(false)
 }

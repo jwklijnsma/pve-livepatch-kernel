@@ -13,3 +13,6 @@ NoNewPrivileges=yes
 PrivateTmp=yes
 ProtectHome=yes
 ProtectSystem=full
+# /etc is read-only above, except the cluster-wide lock in pmxcfs ("-": the
+# path only exists on Proxmox VE nodes).
+ReadWritePaths=-/etc/pve/priv/lock

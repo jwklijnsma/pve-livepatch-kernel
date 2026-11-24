@@ -24,5 +24,7 @@ override_dh_auto_clean:
 	rm -rf debian/.cargo
 
 override_dh_installsystemd:
-	dh_installsystemd hvpatch-boot.service
+	# The boot unit loads kernel code: never run it as a side effect of a
+	# package upgrade.
+	dh_installsystemd --no-restart-after-upgrade hvpatch-boot.service
 	dh_installsystemd --no-enable --no-start hvpatch-auto.timer hvpatch-auto.service

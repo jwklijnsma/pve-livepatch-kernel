@@ -11,7 +11,7 @@ use std::time::Duration;
 
 use anyhow::{Result, bail};
 
-use crate::kernel::{BlockingTask, KernelOps, KmsgWatch, LoadError, ModuleInfo, PatchInfo, taint};
+use crate::kernel::{BlockingTask, KernelOps, KmsgRecord, KmsgWatch, LoadError, ModuleInfo, PatchInfo, taint};
 
 #[derive(Debug, Clone)]
 pub struct FakePatch {
@@ -38,12 +38,18 @@ pub struct FakeState {
     pub stuck: bool,
     /// The reverse transition never completes either.
     pub reverse_stuck: bool,
-    /// Kernel log lines emitted by the next module load.
-    pub kmsg_on_load: Vec<String>,
+    /// Kernel log records emitted by the next module load.
+    pub kmsg_on_load: Vec<KmsgRecord>,
+    /// Like a real kernel, drop the module reference of a freed patch only
+    /// this many `modules()` calls after its sysfs entry disappeared.
+    pub put_delay: u32,
+    pending_puts: Vec<(String, u32)>,
     pub taint_on_load: u64,
     /// Functions every loaded patch reports in sysfs.
     pub functions_on_load: Vec<(String, bool)>,
     pub blockers: Vec<BlockingTask>,
+    /// Functions with kprobes/BPF attached (see KernelOps::traced_functions).
+    pub traced: Vec<String>,
     /// Chronological record of mutating calls, for assertions.
     pub calls: Vec<String>,
     pub slept: Duration,
@@ -51,7 +57,7 @@ pub struct FakeState {
 
 pub struct FakeKernel {
     pub st: RefCell<FakeState>,
-    kmsg: Rc<RefCell<Vec<String>>>,
+    kmsg: Rc<RefCell<Vec<KmsgRecord>>>,
 }
 
 impl FakeKernel {
@@ -68,9 +74,12 @@ impl FakeKernel {
                 stuck: false,
                 reverse_stuck: false,
                 kmsg_on_load: vec![],
+                put_delay: 0,
+                pending_puts: vec![],
                 taint_on_load: 0,
                 functions_on_load: vec![("vmlinux:tcp_fix_me,1".into(), true)],
                 blockers: vec![],
+                traced: vec![],
                 calls: vec![],
                 slept: Duration::ZERO,
             }),
@@ -92,8 +101,9 @@ impl FakeKernel {
         st.tainted |= taint::LIVEPATCH;
     }
 
+    /// A kernel warning-level log line.
     pub fn log_kmsg(&self, line: &str) {
-        self.kmsg.borrow_mut().push(line.into());
+        self.kmsg.borrow_mut().push(KmsgRecord::kernel(4, line));
     }
 
     pub fn active(&self) -> Vec<String> {
@@ -123,8 +133,29 @@ impl FakeKernel {
     }
 
     fn put(st: &mut FakeState, module: &str) {
+        if st.put_delay > 0 {
+            let delay = st.put_delay;
+            st.pending_puts.push((module.to_owned(), delay));
+            return;
+        }
         if let Some(m) = st.modules.iter_mut().find(|m| m.name == module) {
             m.refcnt = m.refcnt.saturating_sub(1);
+        }
+    }
+
+    fn tick_puts(st: &mut FakeState) {
+        let mut due = Vec::new();
+        for (name, left) in st.pending_puts.iter_mut() {
+            *left = left.saturating_sub(1);
+            if *left == 0 {
+                due.push(name.clone());
+            }
+        }
+        st.pending_puts.retain(|(_, left)| *left > 0);
+        for name in due {
+            if let Some(m) = st.modules.iter_mut().find(|m| m.name == name) {
+                m.refcnt = m.refcnt.saturating_sub(1);
+            }
         }
     }
 }
@@ -236,7 +267,9 @@ impl KernelOps for FakeKernel {
     }
 
     fn modules(&self) -> Result<Vec<ModuleInfo>> {
-        Ok(self.st.borrow().modules.clone())
+        let mut st = self.st.borrow_mut();
+        Self::tick_puts(&mut st);
+        Ok(st.modules.clone())
     }
 
     fn tainted(&self) -> Result<u64> {
@@ -252,18 +285,22 @@ impl KernelOps for FakeKernel {
         Ok(self.st.borrow().blockers.clone())
     }
 
+    fn traced_functions(&self) -> Result<Vec<String>> {
+        Ok(self.st.borrow().traced.clone())
+    }
+
     fn sleep(&self, d: Duration) {
         self.st.borrow_mut().slept += d;
     }
 }
 
 struct FakeKmsg {
-    buf: Rc<RefCell<Vec<String>>>,
+    buf: Rc<RefCell<Vec<KmsgRecord>>>,
     pos: usize,
 }
 
 impl KmsgWatch for FakeKmsg {
-    fn drain(&mut self) -> Result<Vec<String>> {
+    fn drain(&mut self) -> Result<Vec<KmsgRecord>> {
         let b = self.buf.borrow();
         let out = b[self.pos..].to_vec();
         self.pos = b.len();

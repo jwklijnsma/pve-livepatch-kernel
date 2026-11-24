@@ -39,6 +39,26 @@ pub struct Config {
     pub allow_http: bool,
     /// HTTP timeout in seconds for one download.
     pub http_timeout: u64,
+    /// Seconds a hook may run before it is killed (and counts as failed).
+    pub hook_timeout: u64,
+    /// Seconds the boot reload waits for another hvpatch run to finish.
+    pub boot_lock_wait: u64,
+    /// In a Proxmox VE cluster, only one node loads a livepatch at a time
+    /// (a cluster-wide lock in pmxcfs). Off: nodes do not coordinate.
+    pub cluster_lock: bool,
+    /// Where the cluster-wide lock lives (pmxcfs).
+    pub cluster_lock_dir: PathBuf,
+    /// The timer applies a level only this many hours after it was built.
+    /// An explicit `apply` ignores the delay.
+    pub delay_hours: u64,
+    /// The timer never goes beyond this level (an explicit `apply` can).
+    pub pin_level: Option<u32>,
+    /// Refuse to load when kprobes or BPF programs are attached to a
+    /// function the patch replaces (otherwise only warn).
+    pub refuse_on_trace_conflict: bool,
+    /// Runtime files for other tools, e.g. the effective kernel version
+    /// for vulnerability scanners.
+    pub run_dir: PathBuf,
 }
 
 impl Default for Config {
@@ -56,6 +76,14 @@ impl Default for Config {
             allow_expired_on_boot: true,
             allow_http: false,
             http_timeout: 300,
+            hook_timeout: 120,
+            boot_lock_wait: 300,
+            cluster_lock: true,
+            cluster_lock_dir: "/etc/pve/priv/lock".into(),
+            delay_hours: 0,
+            pin_level: None,
+            refuse_on_trace_conflict: false,
+            run_dir: "/run/hvpatch".into(),
         }
     }
 }

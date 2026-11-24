@@ -11,7 +11,15 @@ ConditionPathIsDirectory=/sys/kernel/livepatch
 Type=oneshot
 RemainAfterExit=yes
 ExecStart=/usr/sbin/hvpatch --quiet boot
-TimeoutStartSec=10min
+TimeoutStartSec=15min
+# Same sandbox as hvpatch-auto.service, so hooks behave the same in both.
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=full
+# /etc is read-only above, except the cluster-wide lock in pmxcfs ("-": the
+# path only exists on Proxmox VE nodes).
+ReadWritePaths=-/etc/pve/priv/lock
 
 [Install]
 WantedBy=multi-user.target

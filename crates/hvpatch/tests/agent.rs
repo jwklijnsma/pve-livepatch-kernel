@@ -7,9 +7,10 @@ use chrono::{DateTime, Utc};
 use hvpatch::agent::{Agent, ApplyError, ApplyOpts, Outcome};
 use hvpatch::config::Config;
 use hvpatch::fake::FakeKernel;
+use hvpatch::kernel::KmsgRecord;
 use hvpatch::repo::FileRepo;
 use hvpatch::report;
-use hvpatch::state::{Phase, State};
+use hvpatch::state::{Attempt, Phase, State};
 use klp_core::manifest::{Fix, Manifest, NotCovered};
 use klp_core::naming::module_name;
 use klp_core::sig::{SecretKey, TrustStore};
@@ -81,6 +82,8 @@ impl Env {
             module_cert: None,
             transition_timeout: 30,
             settle_time: 1,
+            run_dir: tmp.path().join("run"),
+            cluster_lock_dir: tmp.path().join("pve-lock"),
             ..Default::default()
         };
         Env { _tmp: tmp, repo, cfg }
@@ -310,8 +313,8 @@ fn secure_boot_without_mok_fails_cleanly() {
     // Secure Boot on, certificate not enrolled: the kernel rejects it.
     k.st.borrow_mut().require_signature = true;
     k.st.borrow_mut().kmsg_on_load = vec![
-        "softdog: soft_reboot_cmd=<not set> soft_active_on_boot=0".into(),
-        "Loading of module with unavailable key is rejected".into(),
+        KmsgRecord::kernel(6, "softdog: soft_reboot_cmd=<not set> soft_active_on_boot=0"),
+        KmsgRecord::kernel(3, "Loading of module with unavailable key is rejected"),
     ];
     let m = env.manifest(1);
     let unsigned = ko(&m.module_name, KVER, false);
@@ -461,15 +464,25 @@ fn bad_kernel_log_after_transition_restores_previous_level() {
     let a = env.agent(kernel());
     a.apply(&explicit()).unwrap();
     env.publish_level(2);
-    a.kernel.st.borrow_mut().kmsg_on_load = vec!["WARNING: CPU: 5 PID: 1 at net/ipv4/tcp.c:42 tcp_fix_me".into()];
+    a.kernel.st.borrow_mut().kmsg_on_load =
+        vec![KmsgRecord::kernel(4, "WARNING: CPU: 5 PID: 1 at net/ipv4/tcp.c:42 tcp_fix_me+0x1/0x2")];
     let e = a.apply(&explicit()).unwrap_err();
     let msg = e.to_string();
-    assert!(msg.contains("post-checks failed") && msg.contains("level 1 was restored"), "{msg}");
+    assert!(msg.contains("post-checks failed") && msg.contains("put back by atomic replace"), "{msg}");
+    // Never without a livepatch: level 2 was never simply disabled.
+    let calls = a.kernel.st.borrow().calls.clone();
+    assert!(!calls.iter().any(|c| c == "enabled klp_hvp_7_3_5_1_p2=0"), "{calls:?}");
     assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
     assert_eq!(a.kernel.loaded(), vec!["klp_hvp_7_3_5_1_p1"]);
     let st = env.state().get(KVER);
     assert_eq!(st.highest_accepted, 1, "a failed level must not count as accepted");
     assert_eq!(st.desired_level, Some(1));
+    assert_eq!(st.quarantined.len(), 1, "level 2 is quarantined");
+    // The timer does not try level 2 again; an operator can.
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(ref s) if s.contains("quarantined")));
+    assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 2, .. }));
+    assert!(env.state().get(KVER).quarantined.is_empty());
 }
 
 #[test]
@@ -597,7 +610,7 @@ fn revert_holds_until_explicit_apply() {
     std::fs::rename(&moved, &env.repo).unwrap();
     // Boot respects the hold.
     let b = env.agent(kernel());
-    assert_eq!(b.boot().unwrap(), Outcome::NothingToLoad);
+    assert_eq!(b.boot().unwrap(), Outcome::Skipped("held after revert".into()));
     // Operator resumes.
     assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 1, .. }));
     assert!(!env.state().get(KVER).held);
@@ -625,4 +638,258 @@ fn write_script(p: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
     std::fs::write(p, body).unwrap();
     std::fs::set_permissions(p, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+// --- Robustness (review findings A1-A6, A12) -----------------------------
+
+#[test]
+fn unrelated_or_tenant_controlled_log_lines_do_not_back_out() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().kmsg_on_load = vec![
+        // A crashing user process, and a tenant naming its process "BUG:".
+        KmsgRecord::kernel(6, "traps: foo[123] general protection fault ip:7f0 sp:7ff error:0 in libc.so"),
+        KmsgRecord::kernel(6, "BUG:[4242]: segfault at 0 ip 0 sp 0 error 6 in x"),
+        // Written into /dev/kmsg from user space.
+        KmsgRecord { facility: 1, level: 0, msg: "Oops: fake".into() },
+    ];
+    let a = env.agent(k);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 1, .. }));
+}
+
+fn manifest_sha(env: &Env, level: u32) -> String {
+    let p = env.repo.join("v1").join(KVER).join("stable/manifest.json");
+    let m: serde_json::Value = serde_json::from_slice(&std::fs::read(p).unwrap()).unwrap();
+    assert_eq!(m["level"], level);
+    m["sha256"].as_str().unwrap().to_owned()
+}
+
+fn edit_state(env: &Env, f: impl FnOnce(&mut State)) {
+    let mut st = env.state();
+    f(&mut st);
+    st.save(&env.cfg.state_file()).unwrap();
+}
+
+#[test]
+fn crash_while_loading_quarantines_the_level() {
+    let env = Env::new();
+    env.publish_level(1);
+    env.agent(kernel()).apply(&explicit()).unwrap();
+    env.publish_level(2);
+    let sha2 = manifest_sha(&env, 2);
+    // The host died while level 2 was loading: the attempt is still recorded.
+    edit_state(&env, |st| {
+        let k = st.kernel(KVER);
+        k.attempt =
+            Some(Attempt { level: 2, sha256: sha2.clone(), module: "klp_hvp_7_3_5_1_p2".into(), started: now() });
+        k.phase = Phase::Loading;
+    });
+    // Reboot: the boot unit reloads level 1, not the level that crashed.
+    let a = env.agent(kernel());
+    assert!(matches!(a.boot().unwrap(), Outcome::Applied { level: 1, .. }));
+    assert!(env.state().get(KVER).quarantined.contains_key(&sha2));
+    // The timer does not try level 2 again.
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(ref s) if s.contains("interrupted")));
+    assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
+}
+
+#[test]
+fn run_interrupted_after_the_transition_is_reconciled() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    // The agent was killed after the transition, before recording it.
+    let sha = manifest_sha(&env, 1);
+    edit_state(&env, |st| {
+        let k = st.kernel(KVER);
+        k.attempt = Some(Attempt { level: 1, sha256: sha, module: "klp_hvp_7_3_5_1_p1".into(), started: now() });
+        k.phase = Phase::Loading;
+        k.desired_level = None;
+        k.highest_accepted = 0;
+    });
+    assert_eq!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::AlreadyActive { level: 1 });
+    let st = env.state().get(KVER);
+    assert_eq!((st.phase, st.desired_level, st.highest_accepted), (Phase::Active, Some(1), 1));
+    assert!(st.attempt.is_none());
+    assert_eq!(report::collect(&a).unwrap().exit_code(), report::exit::REBOOT_REQUIRED);
+}
+
+#[test]
+fn stalled_level_is_quarantined_for_the_timer() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().stuck = true;
+    let a = env.agent(k);
+    assert!(a.apply(&explicit()).is_err());
+    assert_eq!(env.state().get(KVER).quarantined.len(), 1);
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(ref s) if s.contains("quarantined")));
+}
+
+#[test]
+fn download_failure_is_recorded_as_failed() {
+    let env = Env::new();
+    let m = env.publish_level(1);
+    std::fs::remove_file(env.repo.join("v1").join(KVER).join(&m.module)).unwrap();
+    let a = env.agent(kernel());
+    assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(ref s)) if s.contains("download")));
+    let st = env.state().get(KVER);
+    assert_eq!(st.phase, Phase::Failed);
+    assert!(st.last_error.unwrap().contains("download"));
+    assert_eq!(report::collect(&a).unwrap().exit_code(), report::exit::FAILED);
+}
+
+#[test]
+fn hooks_time_out_and_are_permission_checked() {
+    use std::os::unix::fs::PermissionsExt;
+    let env = Env::new();
+    env.publish_level(1);
+    std::fs::create_dir_all(&env.cfg.hooks_dir).unwrap();
+    let marker = env.cfg.state_dir.join("hook-env");
+    std::fs::create_dir_all(&env.cfg.state_dir).unwrap();
+    // Runs, and sees the mode.
+    write_script(
+        &env.cfg.hooks_dir.join("10-env"),
+        &format!("#!/bin/sh\necho \"$HVPATCH_MODE $HVPATCH_LEVEL\" > {}\n", marker.display()),
+    );
+    // Ignored like run-parts does.
+    write_script(&env.cfg.hooks_dir.join("20-fail.dpkg-old"), "#!/bin/sh\nexit 1\n");
+    write_script(&env.cfg.hooks_dir.join(".hidden"), "#!/bin/sh\nexit 1\n");
+    let a = env.agent(kernel());
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { .. }));
+    assert_eq!(std::fs::read_to_string(&marker).unwrap().trim(), "apply 1");
+
+    // A hook that hangs is killed after hook_timeout.
+    let env = Env::new();
+    env.publish_level(1);
+    std::fs::create_dir_all(&env.cfg.hooks_dir).unwrap();
+    write_script(&env.cfg.hooks_dir.join("10-hang"), "#!/bin/sh\nsleep 30\n");
+    let mut a = env.agent(kernel());
+    a.cfg.hook_timeout = 1;
+    let start = std::time::Instant::now();
+    let e = a.apply(&explicit()).unwrap_err();
+    assert!(e.to_string().contains("did not finish within 1 s"), "{e}");
+    assert!(start.elapsed() < std::time::Duration::from_secs(10));
+
+    // A hook others can write is refused.
+    let env = Env::new();
+    env.publish_level(1);
+    std::fs::create_dir_all(&env.cfg.hooks_dir).unwrap();
+    let h = env.cfg.hooks_dir.join("10-open");
+    write_script(&h, "#!/bin/sh\nexit 0\n");
+    std::fs::set_permissions(&h, std::fs::Permissions::from_mode(0o777)).unwrap();
+    let e = env.agent(kernel()).apply(&explicit()).unwrap_err();
+    assert!(e.to_string().contains("writable by group or others"), "{e}");
+}
+
+#[test]
+fn asynchronous_freeing_is_not_mistaken_for_a_forced_patch() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().put_delay = 3;
+    let a = env.agent(k);
+    a.apply(&explicit()).unwrap();
+    env.publish_level(2);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 2, .. }));
+    env.publish_level(3);
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 3, .. }));
+}
+
+#[test]
+fn only_one_node_per_cluster_loads_at_a_time() {
+    let env = Env::new();
+    env.publish_level(1);
+    std::fs::create_dir_all(&env.cfg.cluster_lock_dir).unwrap();
+    // Another node holds the lock.
+    std::fs::create_dir(env.cfg.cluster_lock_dir.join(hvpatch::cluster::LOCK_NAME)).unwrap();
+    let a = env.agent(kernel());
+    let e = a.apply(&explicit()).unwrap_err();
+    assert!(matches!(e, ApplyError::Precondition(ref s) if s.contains("another node")), "{e}");
+    assert!(a.kernel.loaded().is_empty());
+    // Released: this node takes it, loads, and releases it again.
+    std::fs::remove_dir(env.cfg.cluster_lock_dir.join(hvpatch::cluster::LOCK_NAME)).unwrap();
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { .. }));
+    assert!(!env.cfg.cluster_lock_dir.join(hvpatch::cluster::LOCK_NAME).exists());
+}
+
+#[test]
+fn delay_and_pin_only_hold_back_the_timer() {
+    let env = Env::new();
+    env.publish_level(1);
+    let mut a = env.agent(kernel());
+    a.cfg.delay_hours = 48;
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(ref s) if s.contains("eligible")));
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 1, .. }));
+    a.cfg.delay_hours = 0;
+    a.cfg.pin_level = Some(1);
+    env.publish_level(2);
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Skipped(ref s) if s.contains("pinned")));
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Applied { level: 2, .. }));
+}
+
+#[test]
+fn trace_conflicts_warn_or_refuse() {
+    let env = Env::new();
+    env.publish_level(1);
+    let k = kernel();
+    k.st.borrow_mut().traced = vec!["tcp_fix_me".into()];
+    let mut a = env.agent(k);
+    a.cfg.refuse_on_trace_conflict = true;
+    assert!(matches!(a.apply(&explicit()), Err(ApplyError::Precondition(ref s)) if s.contains("tcp_fix_me")));
+    a.cfg.refuse_on_trace_conflict = false;
+    match a.apply(&explicit()).unwrap() {
+        Outcome::Applied { warnings, .. } => assert!(warnings.iter().any(|w| w.contains("tcp_fix_me")), "{warnings:?}"),
+        o => panic!("{o:?}"),
+    }
+}
+
+#[test]
+fn effective_version_for_scanners() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    let ev = std::fs::read_to_string(env.cfg.run_dir.join("effective_version")).unwrap();
+    assert_eq!(ev.trim(), "7.3.5-1-pve+hvpatch.1");
+    assert_eq!(std::fs::read_to_string(env.cfg.run_dir.join("fixed_cves")).unwrap().trim(), "CVE-2026-0001");
+    a.revert().unwrap();
+    assert!(!env.cfg.run_dir.join("effective_version").exists());
+}
+
+#[test]
+fn boot_skips_a_quarantined_level_for_the_one_below() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    env.publish_level(2);
+    a.apply(&explicit()).unwrap();
+    let sha2 = manifest_sha(&env, 2);
+    edit_state(&env, |st| {
+        st.kernel(KVER)
+            .quarantined
+            .insert(sha2, hvpatch::state::Quarantine { level: 2, reason: "test".into(), since: now() });
+    });
+    let b = env.agent(kernel());
+    assert!(matches!(b.boot().unwrap(), Outcome::Applied { level: 1, .. }));
+    assert_eq!(b.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
+}
+
+#[test]
+fn cache_keeps_only_recent_levels() {
+    let env = Env::new();
+    let a = env.agent(kernel());
+    for level in 1..=5 {
+        env.publish_level(level);
+        a.apply(&explicit()).unwrap();
+    }
+    let mut levels: Vec<String> = std::fs::read_dir(env.cfg.cache_dir().join(KVER))
+        .unwrap()
+        .map(|e| e.unwrap().file_name().to_string_lossy().into_owned())
+        .collect();
+    levels.sort();
+    assert_eq!(levels, vec!["3", "4", "5"]);
 }

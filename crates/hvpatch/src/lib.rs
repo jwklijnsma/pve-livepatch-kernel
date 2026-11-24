@@ -7,6 +7,7 @@
 
 pub mod agent;
 pub mod check;
+pub mod cluster;
 pub mod config;
 pub mod fake;
 pub mod kernel;

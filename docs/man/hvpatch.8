@@ -1,4 +1,4 @@
-.TH PVE-KLP 8 "2026-11-23" "hvpatch 0.2.0" "System Administration"
+.TH PVE-KLP 8 "2026-11-23" "hvpatch 0.2.1" "System Administration"
 .SH NAME
 hvpatch \- verify and load kernel livepatches on Proxmox VE hosts
 .SH SYNOPSIS
@@ -78,6 +78,27 @@ enrollment in MokManager on the console during the next boot.
 .B mokutil
 asks for a one-time password on the terminal; it does not read it from a
 pipe.
+.SH SAFETY
+A load is recorded before it starts. If a level fails (load error, stalled
+transition, failed post-checks) or its load was interrupted by a crash,
+reboot or a killed agent, its module is
+.IR quarantined :
+neither the timer nor the boot reload loads it again, and the boot reload
+falls back to the highest cached level below it.
+.B apply
+retries a quarantined level on request. If a new level fails its
+post-checks after it replaced the previous one, the previous level is put
+back by atomic replace, so the host is never without a livepatch.
+.PP
+Post-checks: every patched function listed in the manifest appears in
+sysfs, the kernel gained no taint flags beyond those of the livepatch
+module itself (O, E, K), the kernel (not user space) logged no BUG, Oops,
+WARNING, lockup or RCU stall at warning level or worse, and all hooks
+succeed.
+.PP
+In a Proxmox VE cluster, a lock in pmxcfs lets only one node load a
+livepatch at a time; without quorum nothing is loaded
+.RB ( cluster_lock ).
 .SH VERIFICATION
 Before loading,
 .B hvpatch
@@ -126,7 +147,11 @@ on installation when missing; package upgrades never change it.
 Trusted manifest signing keys (minisign format).
 .TP
 .I /etc/hvpatch/hooks.d/
-Executables run, in name order, after each successful load by
+Executables run like run-parts (names of letters, digits, - and _ only, in
+name order), with a timeout
+.RB ( hook_timeout ),
+only if owned by root and not writable by group or others, after each
+successful load by
 .B apply
 or the boot reload (not after
 .BR revert ),
@@ -135,7 +160,15 @@ with
 .B HVPATCH_LEVEL
 and
 .B HVPATCH_MODULE
-set. A non-zero exit reverts the livepatch.
+and
+.B HVPATCH_MODE
+(apply, boot or restore) set. A non-zero exit reverts the livepatch.
+.TP
+.I /run/hvpatch/effective_version
+The running kernel with the active level, e.g. 7.3.4-1-pve+hvpatch.2, for
+vulnerability scanners;
+.I fixed_cves
+lists the CVEs fixed live.
 .TP
 .I /var/lib/hvpatch/
 State and module cache.

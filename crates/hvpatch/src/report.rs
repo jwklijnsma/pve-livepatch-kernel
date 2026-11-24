@@ -60,6 +60,16 @@ pub struct StatusReport {
     pub last_error: Option<String>,
     /// Observations about the live kernel that explain or resolve the state.
     pub hints: Vec<String>,
+    /// Levels the timer and the boot unit will not load again.
+    pub quarantined: Vec<QuarantineInfo>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct QuarantineInfo {
+    pub level: u32,
+    pub sha256: String,
+    pub reason: String,
+    pub since: DateTime<Utc>,
 }
 
 pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
@@ -137,6 +147,16 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         not_covered,
         reboot_required: !reboot_reasons.is_empty(),
         reboot_reasons,
+        quarantined: ks
+            .quarantined
+            .iter()
+            .map(|(sha, q)| QuarantineInfo {
+                level: q.level,
+                sha256: sha.clone(),
+                reason: q.reason.clone(),
+                since: q.since,
+            })
+            .collect(),
         last_error: ks.last_error,
         hints,
     })
@@ -245,6 +265,15 @@ impl StatusReport {
         } else {
             let _ = writeln!(s, "reboot:        not required by known fixes");
         }
+        for q in &self.quarantined {
+            let _ = writeln!(
+                s,
+                "quarantined:   level {} since {} ({}); `hvpatch apply` retries it",
+                q.level,
+                q.since.format("%Y-%m-%d %H:%M"),
+                q.reason
+            );
+        }
         for h in &self.hints {
             let _ = writeln!(s, "note:          {h}");
         }
@@ -282,6 +311,11 @@ impl StatusReport {
             (self.reboot_required as u8).to_string(),
         );
         g("hvpatch_cves_covered", "CVEs fixed by the active livepatch.", self.covered.len().to_string());
+        g(
+            "hvpatch_quarantined",
+            "Levels not loaded again automatically after a failure.",
+            self.quarantined.len().to_string(),
+        );
         g(
             "hvpatch_cves_not_covered",
             "Known CVEs for this kernel that need a reboot.",
@@ -346,6 +380,7 @@ mod tests {
             reboot_reasons: vec![],
             last_error: None,
             hints: vec![],
+            quarantined: vec![],
         }
     }
 
