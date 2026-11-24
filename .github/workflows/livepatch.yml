@@ -62,7 +62,7 @@ env:
 
 jobs:
   plan:
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       pull-requests: write
@@ -155,7 +155,7 @@ jobs:
   build:
     needs: plan
     if: needs.plan.outputs.matrix != '[]'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     timeout-minutes: 360
     strategy:
       fail-fast: false
@@ -273,7 +273,7 @@ jobs:
   publish:
     needs: [plan, build]
     if: always() && needs.plan.outputs.matrix != '[]' && needs.plan.result == 'success'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-26.04
     permissions:
       contents: write
       pages: write
