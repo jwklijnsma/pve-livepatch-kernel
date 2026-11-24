@@ -26,11 +26,15 @@ R="$OUT/root"
 cp "$R/boot/config-$KVER"       "$OUT/config"
 cp "$R/boot/System.map-$KVER"   "$OUT/System.map"
 cp "$R/usr/src/linux-headers-$KVER/Module.symvers" "$OUT/Module.symvers"
-if [ -d "$R/usr/lib/modules/$KVER" ]; then
-  ln -sfn "$R/usr/lib/modules/$KVER" "$OUT/modules"
-else
-  ln -sfn "$R/lib/modules/$KVER" "$OUT/modules"
-fi
+# 7.3 ships the modules in /usr/lib/modules, 7.0 in /lib/modules (where
+# /usr/lib/modules/<kver> exists too, holding only the headers' build link).
+# Take the directory that has the modules.
+MODDIR=
+for d in "$R/usr/lib/modules/$KVER" "$R/lib/modules/$KVER"; do
+  [ -f "$d/modules.dep" ] && [ -d "$d/kernel" ] && { MODDIR=$d; break; }
+done
+[ -n "$MODDIR" ] || die "no module tree (modules.dep, kernel/) for $KVER in the packages"
+ln -sfn "$MODDIR" "$OUT/modules"
 cp "$R/boot/vmlinuz-$KVER" "$OUT/vmlinuz"
 # Gate A and the QEMU stage read the modules as ELF: unpack compressed ones.
 find -L "$OUT/modules/" -name '*.ko.zst' -exec zstd -qd --rm {} \;
