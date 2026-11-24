@@ -100,7 +100,7 @@ jobs:
         run: |
           v="${GITHUB_REF_NAME#v}"
           case "$GITHUB_REF" in refs/tags/v*) ;; *) v="$(sed -n 's/^## \[\([0-9][^]]*\)\].*/\1/p' CHANGELOG.md | head -n1)" ;; esac
-          awk -v v="$v" '$0 ~ "^## \\[" v "\\]" {on=1; next} on && /^## \[/ {exit} on && /^\[[^]]+\]: http/ {next} on' CHANGELOG.md > notes.md
+          awk -v v="$v" 'index($0, "## [" v "]") == 1 {on=1; next} on && /^## \[/ {exit} on && /^\[[^]]+\]: http/ {next} on' CHANGELOG.md > notes.md
           [ -s notes.md ] || { echo "CHANGELOG.md has no section for $v"; exit 1; }
           cat >> notes.md <<NOTES
 

@@ -1,3 +1,11 @@
+hvpatch (0.3.0+jw1-1) trixie; urgency=medium
+
+  * Fork jwklijnsma/pve-livepatch-kernel of prepaid-host/hvpatch: automatic
+    livepatch builds for new Proxmox VE kernels on GitHub Actions,
+    repository on GitHub Pages, package metadata pointing to the fork.
+
+ -- Jan Wiebe Klijnsma <jwklijnsma@users.noreply.github.com>  Tue, 24 Nov 2026 23:30:00 +0100
+
 hvpatch (0.3.0-1) trixie; urgency=medium
 
   * Experimental support for the 7.0 kernel series (tested with

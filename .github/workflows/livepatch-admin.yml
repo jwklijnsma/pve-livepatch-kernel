@@ -1,0 +1,100 @@
+name: livepatch-admin
+
+# Promote or revoke a published livepatch level by hand, then redeploy the
+# GitHub Pages repository. Fresh builds land in ring canary (livepatch.yml).
+#
+#   promote: canary -> early, or early -> stable (what the lower ring serves)
+#   revoke:  nodes stop loading <level> and go back to the level below it
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        type: choice
+        options: [promote, revoke]
+        default: promote
+      kernel:
+        description: "Kernel release, e.g. 7.3.5-1-pve"
+        required: true
+      ring:
+        description: "promote: target ring"
+        type: choice
+        options: [early, stable]
+        default: early
+      level:
+        description: "revoke: level to withdraw"
+        required: false
+        default: ""
+      reason:
+        description: "revoke: reason (shown to nodes)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livepatch
+  cancel-in-progress: false
+
+jobs:
+  admin:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: build tool
+        run: |
+          cargo build --release --locked -p hvpatch-tool
+          sudo install -m 0755 target/release/hvpatch-tool /usr/local/bin/hvpatch-tool
+      - name: published repository
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch -q origin klp-repo
+          git worktree add -f repo origin/klp-repo
+          git -C repo switch -qC klp-repo
+      - name: ${{ inputs.action }}
+        env:
+          ACTION: ${{ inputs.action }}
+          KVER: ${{ inputs.kernel }}
+          RING: ${{ inputs.ring }}
+          LEVEL: ${{ inputs.level }}
+          REASON: ${{ inputs.reason }}
+          KLP_MANIFEST_KEY: ${{ secrets.KLP_MANIFEST_KEY }}
+        run: |
+          [[ "$KVER" =~ ^[0-9]+\.[0-9]+\.[0-9]+-[0-9]+-pve$ ]] || { echo "::error::odd kernel release $KVER"; exit 1; }
+          [ -f repo/manifest.pub ] || { echo "::error::repo has no manifest.pub (set variable KLP_MANIFEST_PUB and publish once)"; exit 1; }
+          umask 077
+          printf '%s\n' "$KLP_MANIFEST_KEY" > "$RUNNER_TEMP/manifest.secret"
+          umask 022
+          export MANIFEST_KEY="$RUNNER_TEMP/manifest.secret"
+          if [ "$ACTION" = promote ]; then
+            builder/promote.sh repo "$KVER" "$RING" repo/manifest.pub
+            msg="promote $KVER to $RING"
+          else
+            [[ "$LEVEL" =~ ^[0-9]+$ ]] && [ -n "$REASON" ] || { echo "::error::revoke needs level and reason"; exit 1; }
+            builder/revoke.sh repo "$KVER" "$LEVEL" "$REASON"
+            msg="revoke $KVER level $LEVEL: $REASON"
+          fi
+          rm -f "$MANIFEST_KEY"
+          hvpatch-tool status-page --repo repo --title "Proxmox VE kernel livepatches" --out repo/index.html
+          git -C repo add -A
+          git -C repo commit -qm "$msg"
+          git -C repo push origin klp-repo
+      - name: site
+        run: |
+          mkdir -p site
+          rsync -aL --exclude .git --exclude 'v1/*/source/*.tar.xz' repo/ site/
+          touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

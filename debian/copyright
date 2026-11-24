@@ -1,6 +1,6 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
 Upstream-Name: hvpatch
-Source: https://github.com/prepaid-host/hvpatch
+Source: https://github.com/jwklijnsma/pve-livepatch-kernel
 
 Files: *
 Copyright: 2026 hvpatch contributors

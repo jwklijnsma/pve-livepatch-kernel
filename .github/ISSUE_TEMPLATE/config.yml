@@ -1,8 +1,8 @@
 blank_issues_enabled: false
 contact_links:
   - name: Questions and ideas
-    url: https://github.com/prepaid-host/hvpatch/discussions
+    url: https://github.com/jwklijnsma/pve-livepatch-kernel/discussions
     about: Ask questions, share ideas and setups in GitHub Discussions.
   - name: Report a security vulnerability
-    url: https://github.com/prepaid-host/hvpatch/security/advisories/new
+    url: https://github.com/jwklijnsma/pve-livepatch-kernel/security/advisories/new
     about: Please report vulnerabilities privately.

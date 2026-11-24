@@ -1,0 +1,362 @@
+name: livepatch
+
+# Builds a signed, QEMU-tested livepatch module for every new Proxmox VE
+# kernel and publishes the repository the nodes read on GitHub Pages:
+#
+#   https://<owner>.github.io/<repo>/        status page, manifest.pub
+#   https://<owner>.github.io/<repo>/v1/...  modules and signed manifests
+#
+# Nodes: hvpatch setup --repository https://<owner>.github.io/<repo>
+#                      --key https://<owner>.github.io/<repo>/manifest.pub
+#
+# Every 6 hours it reads Proxmox's package lists, adds new kernel releases to
+# builder/kernels.lock (the commit of Proxmox's release tag), and rebuilds a
+# kernel when its locked commit, the catalog, the builder or the build tool
+# changed since its last publish. New builds go to ring canary; promote them
+# with the livepatch-admin workflow, or set LIVEPATCH_AUTO_PROMOTE.
+#
+# Secrets (builder/ci-setup.sh creates and sets them):
+#   KLP_MODULE_KEY      module signing private key (PEM)
+#   KLP_MODULE_CERT     module signing certificate (DER, base64)
+#   KLP_MANIFEST_KEY    manifest signing secret key (hvpatch-tool keygen)
+# Variables (Settings -> Secrets and variables -> Actions -> Variables):
+#   KLP_MANIFEST_PUB        manifest public key, published as manifest.pub
+#   LIVEPATCH_SERIES        kernel series to build (default "7.3 7.0")
+#   LIVEPATCH_KEEP          newest releases per series (default 2)
+#   LIVEPATCH_COMPONENTS    Proxmox components (default "pve-no-subscription pve-test")
+#   LIVEPATCH_LOCK          "commit" (default): add new kernels to kernels.lock
+#                           on main; "pr": open a pull request to review first
+#   LIVEPATCH_AUTO_PROMOTE  "" (default, canary only), "early" or "stable"
+#   LIVEPATCH_CYCLES        patch/unpatch cycles in the QEMU stage (default 5)
+
+on:
+  schedule:
+    - cron: "23 */6 * * *"
+  push:
+    branches: [main]
+    paths:
+      - "catalog/**"
+      - "builder/**"
+      - "crates/hvpatch-tool/**"
+      - "crates/klp-core/**"
+  workflow_dispatch:
+    inputs:
+      kernels:
+        description: "Kernel releases to build, space separated (empty: newest from Proxmox)"
+        required: false
+        default: ""
+      force:
+        description: "Build even if nothing changed since the last publish"
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: livepatch
+  cancel-in-progress: false
+
+env:
+  REPO_BRANCH: klp-repo
+
+jobs:
+  plan:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      sha: ${{ steps.plan.outputs.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: published repository (branch klp-repo)
+        run: |
+          if git ls-remote --exit-code origin "refs/heads/$REPO_BRANCH" >/dev/null; then
+            git worktree add -f published "origin/$REPO_BRANCH"
+          else
+            mkdir -p published
+          fi
+      - name: newest Proxmox kernels
+        id: kernels
+        env:
+          INPUT_KERNELS: ${{ inputs.kernels }}
+          SERIES: ${{ vars.LIVEPATCH_SERIES || '7.3 7.0' }}
+          KEEP: ${{ vars.LIVEPATCH_KEEP || '2' }}
+          COMPONENTS: ${{ vars.LIVEPATCH_COMPONENTS || 'pve-no-subscription pve-test' }}
+        run: |
+          if [ -n "$INPUT_KERNELS" ]; then
+            k="$INPUT_KERNELS"
+          else
+            k=$(python3 .github/scripts/pve-kernels.py --series "$SERIES" --keep "$KEEP" --components "$COMPONENTS" | tr '\n' ' ')
+          fi
+          echo "kernels: $k"
+          echo "list=$k" >> "$GITHUB_OUTPUT"
+      - name: lock new kernel releases
+        env:
+          KERNELS: ${{ steps.kernels.outputs.list }}
+          MODE: ${{ vars.LIVEPATCH_LOCK || 'commit' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          added=()
+          for k in $KERNELS; do
+            awk -v k="$k" '$1 == k { f = 1 } END { exit !f }' builder/kernels.lock && continue
+            pkgver=${k%-pve}
+            series=$(echo "$k" | cut -d. -f1-2)
+            if [ "$series" = 7.0 ]; then
+              repo=https://git.proxmox.com/git/pve-kernel.git; tag="proxmox-kernel-$k"
+            else
+              repo=https://git.proxmox.com/git/proxmox-kernel.git; tag="proxmox/$pkgver"
+            fi
+            refs=$(git ls-remote "$repo" "refs/tags/$tag" "refs/tags/$tag^{}" || true)
+            commit=$(echo "$refs" | awk '/\^\{\}$/ { print $1 }')
+            [ -n "$commit" ] || commit=$(echo "$refs" | awk 'NR == 1 { print $1 }')
+            if ! [[ "$commit" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::warning::$k: no tag $tag in $repo yet; add it to builder/kernels.lock by hand (docs/self-hosting.md)"
+              continue
+            fi
+            printf '%-14s %s\n' "$k" "$commit" >> builder/kernels.lock
+            echo "::notice::$k locked to $tag ($commit)"
+            added+=("$k")
+          done
+          [ "${#added[@]}" -gt 0 ] || exit 0
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          msg="kernels.lock: add ${added[*]}"
+          if [ "$MODE" = commit ]; then
+            git commit -qm "$msg" -m "Commits of Proxmox's release tags on git.proxmox.com, added by the livepatch workflow." builder/kernels.lock
+            if git push origin HEAD:main; then exit 0; fi
+            echo "::warning::pushing to main failed (branch protection?); opening a pull request instead"
+            git reset -q --soft HEAD~1
+          fi
+          branch="kernels-lock/$(echo "${added[*]}" | tr ' ' '_')"
+          git switch -qc "$branch"
+          git commit -qm "$msg" -m "Review the commits against git.proxmox.com and the package changelog, then merge." builder/kernels.lock || true
+          git push -f origin "$branch"
+          gh pr view "$branch" >/dev/null 2>&1 || gh pr create --head "$branch" --title "$msg" \
+            --body "New Proxmox kernel releases, locked to the commit of their release tag. Merging starts the livepatch build."
+          git switch -q -
+          git checkout -q -- builder/kernels.lock
+      - name: plan
+        id: plan
+        env:
+          KERNELS: ${{ steps.kernels.outputs.list }}
+          FORCE: ${{ inputs.force || false }}
+        run: |
+          # shellcheck disable=SC2086
+          m=$(.github/scripts/plan.sh published "$FORCE" $KERNELS)
+          echo "matrix=$m" >> "$GITHUB_OUTPUT"
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "$m" | python3 -m json.tool
+
+  build:
+    needs: plan
+    if: needs.plan.outputs.matrix != '[]'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    name: build ${{ matrix.kver }} level ${{ matrix.level }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - name: disk space (the build tree needs about 55 GB)
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /usr/local/.ghcup \
+            /opt/hostedtoolcache/CodeQL /usr/share/swift /usr/local/share/boost /usr/local/share/powershell
+          sudo docker image prune -af >/dev/null
+          df -h / /mnt || true
+          # One volume over the free space of / and /mnt, mounted at build/.
+          # Leave 15 GB on / for docker images and the toolchain.
+          root_free=$(( $(df --output=avail -k / | tail -1) / 1024 / 1024 - 15 ))
+          mnt_free=0
+          if mountpoint -q /mnt; then mnt_free=$(( $(df --output=avail -k /mnt | tail -1) / 1024 / 1024 - 2 )); fi
+          pvs=()
+          if [ "$root_free" -gt 1 ]; then sudo fallocate -l "${root_free}G" /pv-root.img; pvs+=("$(sudo losetup --find --show /pv-root.img)"); fi
+          if [ "$mnt_free" -gt 1 ]; then sudo fallocate -l "${mnt_free}G" /mnt/pv-mnt.img; pvs+=("$(sudo losetup --find --show /mnt/pv-mnt.img)"); fi
+          sudo pvcreate -qq "${pvs[@]}"
+          sudo vgcreate -qq buildvg "${pvs[@]}"
+          sudo lvcreate -qq -y -l 100%FREE -n build buildvg
+          sudo mkfs.ext4 -q -m 0 -E nodiscard /dev/buildvg/build
+          mkdir -p build
+          sudo mount -o noatime /dev/buildvg/build build
+          sudo chown "$(id -u):$(id -g)" build
+          df -h build
+      - name: KVM for the QEMU stage
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm.rules
+          sudo udevadm control --reload-rules && sudo udevadm trigger --name-match=kvm || true
+          ls -l /dev/kvm || echo "no /dev/kvm: the QEMU stage runs without acceleration (slow)"
+      - name: build tool (hvpatch-tool, static)
+        run: |
+          rustup toolchain install stable --profile minimal --target x86_64-unknown-linux-musl
+          rustup default stable
+          cargo build --release --locked -p hvpatch-tool --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/hvpatch-tool builder/hvpatch-tool
+          rm -rf target
+      - name: previous level (atomic replace test)
+        if: matrix.prev != ''
+        env:
+          KVER: ${{ matrix.kver }}
+          PREV: ${{ matrix.prev }}
+        run: |
+          git fetch -q --depth 1 origin "$REPO_BRANCH"
+          mkdir -p "$RUNNER_TEMP/prev"
+          git show "FETCH_HEAD:v1/$KVER/$PREV" > "$RUNNER_TEMP/prev/$PREV"
+      - name: build, sign, QEMU test
+        env:
+          KVER: ${{ matrix.kver }}
+          LEVEL: ${{ matrix.level }}
+          PREV: ${{ matrix.prev }}
+          KLP_MODULE_KEY: ${{ secrets.KLP_MODULE_KEY }}
+          KLP_MODULE_CERT: ${{ secrets.KLP_MODULE_CERT }}
+          CYCLES: ${{ vars.LIVEPATCH_CYCLES || '5' }}
+        run: |
+          [ -n "$KLP_MODULE_KEY" ] && [ -n "$KLP_MODULE_CERT" ] \
+            || { echo "::error::secrets KLP_MODULE_KEY / KLP_MODULE_CERT are not set; run builder/ci-setup.sh"; exit 1; }
+          KEYS="$RUNNER_TEMP/keys"
+          mkdir -m 0700 "$KEYS"
+          printf '%s\n' "$KLP_MODULE_KEY" > "$KEYS/module.priv"
+          printf '%s' "$KLP_MODULE_CERT" | base64 -d > "$KEYS/module-cert.der"
+          chmod 0644 "$KEYS"/*
+          prev=()
+          [ -z "$PREV" ] || prev=("$RUNNER_TEMP/prev/$PREV")
+          ENGINE=docker KEYS="$KEYS" builder/run.sh "$KVER" "$LEVEL" ${prev[@]+"${prev[@]}"}
+          rm -rf "$KEYS"
+      - name: collect
+        if: success()
+        env:
+          KVER: ${{ matrix.kver }}
+          FP: ${{ matrix.fingerprint }}
+        run: |
+          mkdir -p result
+          echo "$KVER" > result/kver
+          echo "$FP" > result/fingerprint
+          if compgen -G "build/$KVER/out/klp_*.ko" >/dev/null; then
+            # The containers write as root.
+            sudo cp -a "build/$KVER/out" result/out
+            sudo chown -R "$(id -u):$(id -g)" result/out
+          fi
+          ls -la result result/out 2>/dev/null || true
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: success()
+        with:
+          name: result-${{ matrix.kver }}
+          path: result
+          retention-days: 14
+      - name: build log on failure
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: failed-${{ matrix.kver }}
+          path: |
+            build/${{ matrix.kver }}/out/*.log
+            build/${{ matrix.kver }}/out/*.txt
+            build/${{ matrix.kver }}/src/klp-tmp/*.log
+          if-no-files-found: ignore
+
+  publish:
+    needs: [plan, build]
+    if: always() && needs.plan.outputs.matrix != '[]' && needs.plan.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: result-*
+          path: results
+      - name: build tool
+        run: |
+          cargo build --release --locked -p hvpatch-tool
+          sudo install -m 0755 target/release/hvpatch-tool /usr/local/bin/hvpatch-tool
+      - name: published repository (branch klp-repo)
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code origin "refs/heads/$REPO_BRANCH" >/dev/null; then
+            git fetch -q origin "$REPO_BRANCH"
+            git worktree add -f repo "origin/$REPO_BRANCH"
+            git -C repo switch -qC "$REPO_BRANCH"
+          else
+            git worktree add -f --orphan -b "$REPO_BRANCH" repo
+            printf '%s\n' '# Kernel sources are release assets (GitHub refuses files over 100 MB).' 'v1/*/source/*.tar.xz' > repo/.gitignore
+            printf '%s\n' 'Livepatch repository, written by the livepatch workflow on main. Do not edit by hand.' > repo/README.md
+          fi
+      - name: publish to ring canary
+        env:
+          KLP_MANIFEST_KEY: ${{ secrets.KLP_MANIFEST_KEY }}
+          KLP_MANIFEST_PUB: ${{ vars.KLP_MANIFEST_PUB }}
+          KLP_MODULE_CERT: ${{ secrets.KLP_MODULE_CERT }}
+          AUTO_PROMOTE: ${{ vars.LIVEPATCH_AUTO_PROMOTE || '' }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          [ -n "$KLP_MANIFEST_KEY" ] || { echo "::error::secret KLP_MANIFEST_KEY is not set; run builder/ci-setup.sh"; exit 1; }
+          umask 077
+          printf '%s\n' "$KLP_MANIFEST_KEY" > "$RUNNER_TEMP/manifest.secret"
+          umask 022
+          export MANIFEST_KEY="$RUNNER_TEMP/manifest.secret"
+          [ -z "$KLP_MANIFEST_PUB" ] || printf '%s\n' "$KLP_MANIFEST_PUB" > repo/manifest.pub
+          # Public certificate, for MOK enrollment on Secure Boot nodes.
+          [ -z "$KLP_MODULE_CERT" ] || printf '%s' "$KLP_MODULE_CERT" | base64 -d > repo/module-cert.der
+          shopt -s nullglob
+          for r in results/*/; do
+            kver=$(cat "$r/kver")
+            if [ -d "$r/out" ]; then
+              builder/publish.sh "$r/out" repo
+              # Kernel source tarballs (GPL corresponding source) go to a release.
+              for t in repo/v1/"$kver"/source/*.tar.xz; do
+                gh release view klp-source >/dev/null 2>&1 \
+                  || gh release create klp-source --title "Kernel sources for the published livepatches" \
+                       --notes "Complete kernel source of every kernel a livepatch was published for (GPL corresponding source)." --latest=false
+                gh release upload klp-source "$t" --clobber
+                printf 'https://github.com/%s/releases/download/klp-source/%s\n' "$GITHUB_REPOSITORY" "$(basename "$t")" \
+                  > "${t%.tar.xz}.url"
+              done
+              case "$AUTO_PROMOTE" in
+                early|stable)
+                  [ -f repo/manifest.pub ] || { echo "::error::auto promote needs variable KLP_MANIFEST_PUB"; exit 1; }
+                  builder/promote.sh repo "$kver" early repo/manifest.pub
+                  [ "$AUTO_PROMOTE" = early ] || builder/promote.sh repo "$kver" stable repo/manifest.pub ;;
+              esac
+            else
+              echo "::notice::$kver: nothing to livepatch with the current catalog"
+            fi
+            mkdir -p repo/ci
+            cp "$r/fingerprint" "repo/ci/$kver.fingerprint"
+          done
+          rm -f "$MANIFEST_KEY"
+      - name: status page
+        run: mkdir -p repo/v1 && hvpatch-tool status-page --repo repo --title "Proxmox VE kernel livepatches" --out repo/index.html
+      - name: commit repository
+        run: |
+          cd repo
+          git add -A
+          git diff --cached --quiet && { echo "nothing changed"; exit 0; }
+          git commit -qm "publish: $(ls ../results | sed 's/^result-//' | tr '\n' ' ')" -m "From ${GITHUB_SHA::12}, run ${GITHUB_RUN_ID}"
+          git push origin "$REPO_BRANCH"
+      - name: site (symlinks dereferenced)
+        run: |
+          mkdir -p site
+          rsync -aL --exclude .git --exclude 'v1/*/source/*.tar.xz' repo/ site/
+          touch site/.nojekyll
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: site
+      - id: deploy
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

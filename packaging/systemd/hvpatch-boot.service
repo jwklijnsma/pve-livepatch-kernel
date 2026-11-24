@@ -1,6 +1,6 @@
 [Unit]
 Description=Reload kernel livepatch for the running kernel (hvpatch)
-Documentation=https://github.com/prepaid-host/hvpatch man:hvpatch(8)
+Documentation=https://github.com/jwklijnsma/pve-livepatch-kernel man:hvpatch(8)
 After=local-fs.target systemd-modules-load.service
 # Patch the host before guests and the HA stack start. Ordering only: a
 # failure here never blocks guests.

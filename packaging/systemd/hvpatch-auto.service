@@ -1,6 +1,6 @@
 [Unit]
 Description=Apply new kernel livepatch levels (hvpatch)
-Documentation=https://github.com/prepaid-host/hvpatch
+Documentation=https://github.com/jwklijnsma/pve-livepatch-kernel
 Wants=network-online.target
 After=network-online.target hvpatch-boot.service
 ConditionPathIsDirectory=/sys/kernel/livepatch

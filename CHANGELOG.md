@@ -6,6 +6,32 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.3.0+jw1] - 2026-11-24
+
+First release of the fork
+[jwklijnsma/pve-livepatch-kernel](https://github.com/jwklijnsma/pve-livepatch-kernel)
+of [prepaid-host/hvpatch](https://github.com/prepaid-host/hvpatch), based on
+hvpatch's `main` after 0.3.0. The agent, the package and all commands keep
+the name `hvpatch`.
+
+### Fork
+
+- `livepatch` workflow: every 6 hours it reads Proxmox's package lists,
+  locks new kernel releases in `builder/kernels.lock` (commit of Proxmox's
+  release tag, directly or as a pull request), builds, signs and
+  QEMU-tests one cumulative module per kernel with `builder/run.sh`, and
+  publishes it to ring `canary` of a repository on GitHub Pages. A kernel
+  is rebuilt only when its locked commit, the catalog, the builder or the
+  build tool changed. Kernel source tarballs go to the `klp-source`
+  release.
+- `livepatch-admin` workflow: promote (canary -> early -> stable) and
+  revoke from the Actions tab; optional automatic promotion with
+  `LIVEPATCH_AUTO_PROMOTE`.
+- `builder/ci-setup.sh`: creates the signing keys, stores them as Actions
+  secrets and turns on GitHub Pages.
+- Package metadata, systemd units, man page and the Ansible role point to
+  the fork.
+
 ### Added
 
 - Releases ship a CycloneDX SBOM (`hvpatch.cdx.json`) with an SBOM
@@ -489,7 +515,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/hvpatch/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/jwklijnsma/pve-livepatch-kernel/compare/v0.3.0+jw1...HEAD
+[0.3.0+jw1]: https://github.com/jwklijnsma/pve-livepatch-kernel/releases/tag/v0.3.0+jw1
 [0.3.0]: https://github.com/prepaid-host/hvpatch/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/prepaid-host/hvpatch/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/prepaid-host/hvpatch/compare/v0.1.6...v0.2.0

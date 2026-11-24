@@ -7,7 +7,7 @@ version = "0.3.0"
 edition = "2024"
 rust-version = "1.88"
 license = "GPL-2.0-only"
-repository = "https://github.com/prepaid-host/hvpatch"
+repository = "https://github.com/jwklijnsma/pve-livepatch-kernel"
 
 [workspace.dependencies]
 anyhow = "1"

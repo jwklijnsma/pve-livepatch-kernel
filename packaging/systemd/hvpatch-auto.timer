@@ -1,6 +1,6 @@
 [Unit]
 Description=Periodically apply new kernel livepatch levels (hvpatch)
-Documentation=https://github.com/prepaid-host/hvpatch
+Documentation=https://github.com/jwklijnsma/pve-livepatch-kernel
 
 [Timer]
 OnBootSec=20min

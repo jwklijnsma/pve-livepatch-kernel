@@ -5,7 +5,7 @@
 Please do not open a public issue for security problems in hvpatch itself
 (agent, build tooling, published modules or signing). Use GitHub's private
 vulnerability reporting for this repository:
-[report a vulnerability](https://github.com/prepaid-host/hvpatch/security/advisories/new)
+[report a vulnerability](https://github.com/jwklijnsma/pve-livepatch-kernel/security/advisories/new)
 ("Security" tab → "Report a vulnerability").
 
 What happens next:

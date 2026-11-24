@@ -1,12 +1,12 @@
 Source: hvpatch
 Section: admin
 Priority: optional
-Maintainer: Christopher Sakel <christopher.sakel@icloud.com>
+Maintainer: Jan Wiebe Klijnsma <jwklijnsma@users.noreply.github.com>
 Build-Depends: debhelper-compat (= 13), cargo (>= 1.88), rustc (>= 1.88)
 Standards-Version: 4.7.0
-Homepage: https://github.com/prepaid-host/hvpatch
-Vcs-Git: https://github.com/prepaid-host/hvpatch.git
-Vcs-Browser: https://github.com/prepaid-host/hvpatch
+Homepage: https://github.com/jwklijnsma/pve-livepatch-kernel
+Vcs-Git: https://github.com/jwklijnsma/pve-livepatch-kernel.git
+Vcs-Browser: https://github.com/jwklijnsma/pve-livepatch-kernel
 Rules-Requires-Root: no
 
 Package: hvpatch

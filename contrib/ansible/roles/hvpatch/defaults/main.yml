@@ -1,7 +1,7 @@
 ---
 # Agent package: a URL (release page) or "apt" if the hvpatch APT repository
 # is configured on the node.
-hvpatch_package: "https://github.com/prepaid-host/hvpatch/releases/latest/download/hvpatch_amd64.deb"
+hvpatch_package: "https://github.com/jwklijnsma/pve-livepatch-kernel/releases/latest/download/hvpatch_amd64.deb"
 # Livepatch repository and its manifest key (URL or local path on the
 # controller; copied to /etc/hvpatch/trusted.d/).
 hvpatch_repository: ""

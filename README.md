@@ -1,18 +1,23 @@
-# hvpatch
+# pve-livepatch-kernel
 
 **Kernel live patching for Proxmox VE hypervisors.** Apply kernel security
 fixes to running hosts without a reboot and without your VMs noticing, then
 reboot at your next maintenance window instead of tonight.
 
-*hvpatch was called pve-klp up to version 0.1.6. Installing hvpatch takes
-over an existing pve-klp node; see the [changelog](CHANGELOG.md).*
+*This is a fork of [prepaid-host/hvpatch](https://github.com/prepaid-host/hvpatch)
+with its full history. On top of it, GitHub Actions builds, signs and tests
+the livepatch for every new Proxmox kernel and serves the repository on
+GitHub Pages, so a node only runs `hvpatch apply` (see
+[Automatic builds](#automatic-builds-on-github-actions)). The agent, the
+package and every command keep the name `hvpatch`, so upstream changes merge
+cleanly. hvpatch was called pve-klp up to version 0.1.6.*
 
-[![CI](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml/badge.svg)](https://github.com/prepaid-host/hvpatch/actions/workflows/ci.yml)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/prepaid-host/hvpatch/badge)](https://scorecard.dev/viewer/?uri=github.com/prepaid-host/hvpatch)
+[![CI](https://github.com/jwklijnsma/pve-livepatch-kernel/actions/workflows/ci.yml/badge.svg)](https://github.com/jwklijnsma/pve-livepatch-kernel/actions/workflows/ci.yml)
+[![livepatch](https://github.com/jwklijnsma/pve-livepatch-kernel/actions/workflows/livepatch.yml/badge.svg)](https://github.com/jwklijnsma/pve-livepatch-kernel/actions/workflows/livepatch.yml)
 [![License: GPL-2.0-only](https://img.shields.io/badge/license-GPL--2.0--only-blue.svg)](LICENSE)
 ![Status: early release](https://img.shields.io/badge/status-early%20release-orange.svg)
 ![Proxmox VE 9](https://img.shields.io/badge/Proxmox%20VE-9-E57000.svg)
-[![Release](https://img.shields.io/github/v/release/prepaid-host/hvpatch?include_prereleases&sort=semver)](https://github.com/prepaid-host/hvpatch/releases)
+[![Release](https://img.shields.io/github/v/release/jwklijnsma/pve-livepatch-kernel?include_prereleases&sort=semver)](https://github.com/jwklijnsma/pve-livepatch-kernel/releases)
 
 ![hvpatch apply on a Proxmox VE node with running VMs](docs/assets/demo.gif)
 
@@ -31,9 +36,9 @@ over an existing pve-klp node; see the [changelog](CHANGELOG.md).*
 >   cluster with loaded guests, no lost guest packet during `apply`
 >   ([docs/kernel-7.0.md](docs/kernel-7.0.md)).
 >
-> No project builds of livepatch modules are published yet: build your own
-> with [docs/self-hosting.md](docs/self-hosting.md). Feedback and
-> [test reports](https://github.com/prepaid-host/hvpatch/issues/new?template=test_report.yml)
+> This fork publishes its builds at <https://jwklijnsma.github.io/pve-livepatch-kernel>
+> (ring `canary` until promoted). Feedback and
+> [test reports](https://github.com/jwklijnsma/pve-livepatch-kernel/issues/new?template=test_report.yml)
 > from non-production hosts are very welcome.
 
 ## Why
@@ -74,11 +79,12 @@ opt-in 7.3 kernel:
 
 ```bash
 # 1. Install the agent (Debian package from the releases page)
-wget https://github.com/prepaid-host/hvpatch/releases/latest/download/hvpatch_amd64.deb
+wget https://github.com/jwklijnsma/pve-livepatch-kernel/releases/latest/download/hvpatch_amd64.deb
 apt install ./hvpatch_amd64.deb
 
 # 2. Point it at a repository and its signing key, and check the host
-hvpatch setup --repository https://klp.example.org --key https://klp.example.org/manifest.pub
+hvpatch setup --repository https://jwklijnsma.github.io/pve-livepatch-kernel \
+  --key https://jwklijnsma.github.io/pve-livepatch-kernel/manifest.pub --ring canary
 
 # 3. Load the livepatch for the running kernel
 hvpatch apply
@@ -92,7 +98,7 @@ signed build provenance, so you can check that a download was built by this
 repository's CI:
 
 ```bash
-gh attestation verify hvpatch_amd64.deb --repo prepaid-host/hvpatch
+gh attestation verify hvpatch_amd64.deb --repo jwklijnsma/pve-livepatch-kernel
 ```
 
 A static binary (`hvpatch-x86_64-linux-musl`) is attached to each release as
@@ -101,8 +107,51 @@ well, for hosts where you do not want the Debian package.
 With Secure Boot, enroll the module certificate once: run `hvpatch mok enroll`
 and confirm in MokManager on the next reboot (BMC or local console).
 
-The repository can be the project's (once published) or your own, built with
-the pipeline in this repository: see [docs/self-hosting.md](docs/self-hosting.md).
+With Secure Boot, the certificate is at `https://jwklijnsma.github.io/pve-livepatch-kernel/module-cert.der`:
+install it as `/etc/hvpatch/module-cert.der` before `mok enroll`.
+
+The repository can be this fork's (GitHub Pages, below) or your own, built
+with the pipeline in this repository: see [docs/self-hosting.md](docs/self-hosting.md).
+
+## Automatic builds on GitHub Actions
+
+The [`livepatch`](.github/workflows/livepatch.yml) workflow runs every 6
+hours, on changes to `catalog/`, `builder/` or the build tool, and by hand
+(Actions → livepatch → Run workflow, optionally with kernel releases and
+*force*):
+
+1. It reads Proxmox's package lists (`pve-no-subscription`, `pve-test`) and
+   takes the newest 2 releases of each series (7.3 and 7.0).
+2. A release that is not in [`builder/kernels.lock`](builder/kernels.lock)
+   yet is locked to the commit of Proxmox's release tag on git.proxmox.com,
+   committed to `main` (or as a pull request with `LIVEPATCH_LOCK=pr`).
+3. A kernel is built when its locked commit, the catalog, the builder or
+   the build tool changed since its last publish. `builder/run.sh` runs
+   unchanged in the runner: fetch, build (no keys), sign, QEMU test with
+   KVM, including the atomic replace of the previous level. One build takes
+   a few hours and about 55 GB, which the job makes from the runner's free
+   disk.
+4. The module goes to ring `canary` of the repository, which lives on the
+   branch `klp-repo` and is served on GitHub Pages together with the status
+   page, `manifest.pub` and `module-cert.der`. The complete kernel source
+   (GPL) is attached to the release `klp-source`.
+
+Promote with Actions → **livepatch-admin** (canary → early → stable), or
+revoke a level there. Set `LIVEPATCH_AUTO_PROMOTE=stable` to skip the rings
+and serve new builds to every node right away.
+
+**Set up once** (keys, Actions secrets, Pages), on a machine with `gh` and
+Rust or a downloaded `hvpatch-tool`:
+
+```bash
+builder/ci-setup.sh jwklijnsma/pve-livepatch-kernel        # keys stay in ~/pve-livepatch-keys: back them up
+gh workflow run livepatch -R jwklijnsma/pve-livepatch-kernel -f force=true
+```
+
+Anyone who can change this repository's workflows can sign modules your
+nodes load: keep write access tight. Repository variables for tuning
+(series, number of releases, components, QEMU cycles) are listed at the top
+of the workflow.
 
 ## How it works
 
@@ -215,7 +264,7 @@ out of scope.
 | --- | --- | --- |
 | 0 | Module from the Proxmox 7.3 tree loads on an unmodified Proxmox kernel | done (nested PVE 9.2, 7.3.5-1-pve) |
 | 1 | A real CVE fix as livepatch; review of all 2026 kernel PSAs for livepatchability | fixes done on 7.3.4-1-pve with reproducer; PSA review open |
-| 2 | Automatic pipeline: newest 3 kernels, Gate A, QEMU test, signing, repository | `builder/run.sh` per kernel done; scheduled CI planned |
+| 2 | Automatic pipeline: newest kernels, Gate A, QEMU test, signing, repository | `builder/run.sh` per kernel done; scheduled GitHub Actions pipeline in this fork |
 | 3 | Agent: check, status, apply, revert, boot unit, .deb, Ansible role | done (Ansible role and Checkmk check in `contrib/`) |
 | 4 | Tests under load, canary on AMD and Intel hardware, 24 h soak | nested tests, stalled transitions, Secure Boot, and a three-node 7.0 cluster with guests under load done; bare-metal canary and 24 h soak open |
 | 5 | Public project builds, status page, APT repository | status page generator done (`hvpatch-tool status-page`); public builds and APT repository planned |
@@ -291,14 +340,16 @@ Build: `make test`, `make static` (static musl binary), `make deb`. Rust 1.88+.
 
 Catalog entries, test reports and code are welcome:
 
-- Questions and ideas: [GitHub Discussions](https://github.com/prepaid-host/hvpatch/discussions)
-- Bugs and CVE requests: [issues](https://github.com/prepaid-host/hvpatch/issues/new/choose)
+- Questions and ideas: [GitHub Discussions](https://github.com/jwklijnsma/pve-livepatch-kernel/discussions)
+- Bugs and CVE requests: [issues](https://github.com/jwklijnsma/pve-livepatch-kernel/issues/new/choose)
 - How to contribute: [CONTRIBUTING.md](CONTRIBUTING.md), [Code of Conduct](CODE_OF_CONDUCT.md)
 - Vulnerabilities: privately, see [SECURITY.md](SECURITY.md)
 
 ## License
 
-GPL-2.0-only, see [LICENSE](LICENSE). Livepatch modules and catalog patches
+GPL-2.0-only, see [LICENSE](LICENSE). hvpatch is by Christopher Sakel and
+contributors ([prepaid-host/hvpatch](https://github.com/prepaid-host/hvpatch));
+this fork keeps their copyright and license. Livepatch modules and catalog patches
 are derived from the Linux kernel and are GPL-2.0 as well.
 
 Proxmox® is a registered trademark of Proxmox Server Solutions GmbH. hvpatch
