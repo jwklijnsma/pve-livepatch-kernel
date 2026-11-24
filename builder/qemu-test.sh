@@ -216,6 +216,16 @@ poweroff -f
 EOF
 
 cp "$(command -v busybox)" "$TMP/busybox"
+# Tools the reproducers use that busybox lacks (it has no chattr/lsattr),
+# from the builder image, with their shared libraries at the same paths.
+: > "$TMP/extra.raw"
+for b in chattr lsattr; do
+  p=$(command -v "$b") || die "$b missing in the builder image"
+  echo "/bin/$b $(realpath -e "$p")" >> "$TMP/extra.raw"
+  ldd "$p" | awk '$2 == "=>" && $3 ~ /^\// { print $3 } $1 ~ /^\// { print $1 }' \
+    | while read -r l; do echo "$l $(realpath -e "$l")"; done >> "$TMP/extra.raw"
+done
+sort -u "$TMP/extra.raw" > "$TMP/extra.list"
 {
   echo "dir /dev 0755 0 0"
   echo "nod /dev/console 0600 0 0 c 5 1"
@@ -228,6 +238,10 @@ cp "$(command -v busybox)" "$TMP/busybox"
   echo "dir /mods 0755 0 0"
   echo "dir /repro 0755 0 0"
   echo "file /bin/busybox $TMP/busybox 0755 0 0"
+  cut -d' ' -f1 "$TMP/extra.list" | while read -r f; do
+    d=$(dirname "$f"); while [ "$d" != / ]; do echo "$d"; d=$(dirname "$d"); done
+  done | sort -u | grep -vxE '/bin' | sed 's/.*/dir & 0755 0 0/'
+  while read -r dst src; do echo "file $dst $src 0755 0 0"; done < "$TMP/extra.list"
   echo "file /init $TMP/init 0755 0 0"
   echo "file /mod.ko $KO 0644 0 0"
   [ -n "$PREV_KO" ] && echo "file /prev.ko $PREV_KO 0644 0 0"

@@ -122,6 +122,11 @@ other worse; they are fixed here.
   kernel clears the screen) are removed from the log before it is
   evaluated; they hid the first `HVPATCH:` line, and the stage ended
   without a message. A missing build-id line is now reported.
+- **QEMU stage reproducers:** the initramfs's busybox has no `chattr`, so
+  the CVE-2026-99640 reproducer failed to run and reported "fixed" (and the
+  stage "inconclusive"). The initramfs now carries `chattr`/`lsattr` from
+  e2fsprogs, and the reproducer exits 2 (cannot run here) unless `chattr`
+  is there and fails with "not supported".
 - **Kernel log check could be triggered by tenants.** Any line containing
   "general protection fault" or "BUG:" backed a patch out, including a
   crashing user process ("traps: …", info level) or a process named "BUG:".

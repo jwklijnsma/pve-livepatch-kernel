@@ -29,13 +29,14 @@ RUN rm -f /etc/apt/sources.list.d/debian.sources \
 # (backports has none, so -t falls back to main). From trixie-backports:
 # rustc, rust-src and rustfmt, which formats generated Rust bindings during
 # the kernel build (7.3.x: rustc 1.94.1, LLVM 21). gawk is required by
-# klp-build; qemu and busybox-static are for the QEMU stage (qemu-test.sh).
+# klp-build; qemu, busybox-static and e2fsprogs (chattr, lsattr for the
+# reproducers) are for the QEMU stage (qemu-test.sh).
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       build-essential gcc-14 binutils bc bison flex cpio kmod rsync gawk \
       libelf-dev libssl-dev libxxhash-dev libdw-dev dwarves zstd xz-utils lz4 bzip2 \
       git git-buildpackage quilt devscripts ca-certificates curl gnupg python3 \
-      qemu-system-x86 busybox-static openssl \
+      qemu-system-x86 busybox-static e2fsprogs openssl \
  && apt-get install -y --no-install-recommends -t trixie-backports \
       rustc rust-src rustfmt bindgen \
  && rm -rf /var/lib/apt/lists/*
