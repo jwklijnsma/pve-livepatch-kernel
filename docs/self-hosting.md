@@ -66,7 +66,9 @@ This runs, inside the container:
    unloads, loads again, checks the kernel log, and compares the booted
    kernel's build-id with the manifest. Writes `out/qemu.ok`.
 
-Output: `build/7.3.5-1-pve/out/`.
+Output: `build/7.3.5-1-pve/out/`. One build tree needs about 52 GB;
+`run.sh` checks for 60 GB free (15 GB when the tree is cached) before it
+starts. Remove trees of kernels you no longer serve.
 
 For level 2 and later, also test the atomic replace of the previous level:
 

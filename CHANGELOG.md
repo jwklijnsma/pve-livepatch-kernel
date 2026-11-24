@@ -6,6 +6,33 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-11-24
+
+The fifth real-host round confirmed 0.1.4: a non-interactive upgrade from
+0.1.3 on a node that ran `setup`, the pending MOK state, and a full kernel
+build with the 0.1.4 image whose module is bit-identical to the 0.1.2-era
+build of the same catalog.
+
+### Fixed
+
+- A failed module load quoted every kernel log line since the load, e.g.
+  an unrelated softdog message after a Secure Boot rejection. Only lines
+  about the module, livepatch, signatures and lockdown are kept.
+
+### Added
+
+- `resolve` also checks that the catalog patches apply together, one after
+  another in catalog order (on a throwaway git index), not only each on its
+  own. Two fixes in the same function could otherwise first fail inside
+  klp-build.
+- `builder/run.sh` checks free space before it starts (60 GB, 15 GB with a
+  cached tree; `MIN_FREE_GB` overrides) instead of failing after an hour.
+
+### Docs
+
+- Obsolete conffile on nodes installed with 0.1.3 or earlier, and the
+  leftover `pve-klp.toml.dpkg-dist` from nodes that hung at the prompt.
+
 ## [0.1.4] - 2026-11-23
 
 Fourth round from the real-host test, which also ran a guest VM under load
@@ -183,7 +210,8 @@ Use on test hosts only.
 - Release workflow with static binaries, SHA256SUMS and build provenance
   attestations.
 
-[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/prepaid-host/pve-klp/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/prepaid-host/pve-klp/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/prepaid-host/pve-klp/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/prepaid-host/pve-klp/compare/v0.1.2...v0.1.3
 [0.1.2]: https://github.com/prepaid-host/pve-klp/compare/v0.1.1...v0.1.2

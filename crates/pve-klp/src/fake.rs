@@ -199,6 +199,9 @@ impl KernelOps for FakeKernel {
         let mut st = self.st.borrow_mut();
         st.calls.push(format!("load {name}"));
         if st.require_signature && !signed {
+            let lines = std::mem::take(&mut st.kmsg_on_load);
+            drop(st);
+            self.kmsg.borrow_mut().extend(lines);
             return Err(LoadError::Signature("Key was rejected by service".into()));
         }
         if info.vermagic_release() != Some(st.release.as_str()) {

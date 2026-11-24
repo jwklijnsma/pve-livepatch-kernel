@@ -71,7 +71,14 @@ secrets, just like the manifest and module keys.
 `/usr/sbin/pve-klp`, systemd units, the configuration template
 `/usr/share/pve-klp/pve-klp.toml` (copied to `/etc/pve-klp/pve-klp.toml` on
 first installation; not a conffile, so upgrades never prompt), empty
-`/etc/pve-klp/trusted.d/` and `hooks.d/`. The boot unit is
+`/etc/pve-klp/trusted.d/` and `hooks.d/`.
+
+Nodes that were installed with 0.1.3 or earlier still list
+`/etc/pve-klp/pve-klp.toml` as an *obsolete* conffile (`dpkg-query
+--showformat='${Conffiles}\n' --show pve-klp`). That is harmless: upgrades
+do not touch it, and `dpkg --purge pve-klp` removes it, as for new
+installations. Nodes that hung at the 0.1.3 conffile prompt may have a
+`/etc/pve-klp/pve-klp.toml.dpkg-dist`; it is not used and can be deleted. The boot unit is
 enabled; the auto timer is installed but disabled. Trusted keys are not part
 of the package: project builds would ship a separate
 `pve-klp-archive-keyring`-style package with the project's manifest key,

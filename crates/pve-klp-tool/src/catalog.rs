@@ -256,11 +256,49 @@ pub fn resolve(
         r.patches.push(patch);
         r.fixes.push(Fix { id: e.id.clone(), title: Some(e.title.clone()), functions: e.functions.clone() });
     }
+    // Each patch applies on its own; klp-build applies them all, in this
+    // order. Two fixes in the same function can still conflict together.
+    if let Some(tree) = tree {
+        if r.patches.len() > 1 {
+            check_cumulative(tree, &r)?;
+        }
+    }
     Ok(r)
 }
 
 fn is_commit_id(c: &str) -> bool {
     (12..=40).contains(&c.len()) && c.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+/// Apply all patches one after another to a throwaway index built from
+/// the tree's HEAD (the working tree is not touched). `git apply --check`
+/// with several patches would check each against the original instead.
+fn check_cumulative(tree: &Path, r: &Resolved) -> Result<()> {
+    let index = std::env::temp_dir().join(format!("pve-klp-resolve-index-{}", std::process::id()));
+    let git = |args: &[&std::ffi::OsStr]| {
+        Command::new("git").arg("-C").arg(tree).env("GIT_INDEX_FILE", &index).args(args).output()
+    };
+    let result = (|| -> Result<()> {
+        let out = git(&["read-tree".as_ref(), "HEAD".as_ref()]).context("running git read-tree")?;
+        if !out.status.success() {
+            bail!("git read-tree HEAD in {}: {}", tree.display(), String::from_utf8_lossy(&out.stderr).trim());
+        }
+        for (patch, fix) in r.patches.iter().zip(&r.fixes) {
+            let out = git(&["apply".as_ref(), "--cached".as_ref(), patch.as_os_str()]).context("running git apply")?;
+            if !out.status.success() {
+                bail!(
+                    "{}: applies to {} on its own, but not after the patches before it in catalog order ({}):\n{}",
+                    fix.id,
+                    r.kernel,
+                    r.fixes.iter().map(|f| f.id.as_str()).collect::<Vec<_>>().join(", "),
+                    String::from_utf8_lossy(&out.stderr).trim()
+                );
+            }
+        }
+        Ok(())
+    })();
+    let _ = std::fs::remove_file(&index);
+    result
 }
 
 /// `git patch-id --stable` of some diff text.
@@ -382,6 +420,50 @@ reviewed_by: ["alice", "bob"]
         // A newer kernel needs none of it.
         let r = resolve(&entries, "7.3.6-1-pve", None, false).unwrap();
         assert!(r.fixes.is_empty() && r.not_covered.is_empty());
+    }
+
+    #[test]
+    fn patches_that_conflict_together_are_refused() {
+        let t = tempfile::tempdir().unwrap();
+        let tree = t.path().join("tree");
+        std::fs::create_dir_all(&tree).unwrap();
+        let git = |args: &[&str]| {
+            let st = Command::new("git").arg("-C").arg(&tree).args(args).output().unwrap();
+            assert!(st.status.success(), "{}", String::from_utf8_lossy(&st.stderr));
+        };
+        git(&["init", "-q"]);
+        std::fs::write(tree.join("f.c"), "a\nb\nc\n").unwrap();
+        git(&["add", "f.c"]);
+        git(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-qm", "base"]);
+        let cat = t.path().join("catalog");
+        for (id, new) in [("CVE-2026-0001", "x"), ("CVE-2026-0002", "y")] {
+            let d = cat.join(id);
+            std::fs::create_dir_all(&d).unwrap();
+            std::fs::write(
+                d.join("0001-fix.patch"),
+                format!("--- a/f.c\n+++ b/f.c\n@@ -1,3 +1,3 @@\n a\n-b\n+{new}\n c\n"),
+            )
+            .unwrap();
+            std::fs::write(
+                d.join("meta.yaml"),
+                format!(
+                    "id: {id}\ntitle: t\nupstream_commits: [\"0123456789abcdef\"]\nseverity: high\n\
+                     class: livepatchable\npatches:\n  default: 0001-fix.patch\nfunctions: [\"vmlinux:f\"]\n\
+                     reviewed_by: [\"a\", \"b\"]\n"
+                ),
+            )
+            .unwrap();
+        }
+        let entries = load(&cat).unwrap();
+        // Each one applies alone ...
+        for e in &entries {
+            assert!(resolve(std::slice::from_ref(e), "7.3.5-1-pve", Some(&tree), false).is_ok());
+        }
+        // ... but not both.
+        let err = resolve(&entries, "7.3.5-1-pve", Some(&tree), false).unwrap_err().to_string();
+        assert!(err.contains("CVE-2026-0002") && err.contains("not after the patches before it"), "{err}");
+        // The working tree was not touched.
+        assert_eq!(std::fs::read_to_string(tree.join("f.c")).unwrap(), "a\nb\nc\n");
     }
 
     #[test]

@@ -378,7 +378,9 @@ impl<K: KernelOps> Agent<K> {
         if let Err(e) = self.kernel.load_module(file) {
             let mut msg = e.to_string();
             if let Some(k) = kmsg.as_mut() {
-                let lines = k.drain().unwrap_or_default();
+                // Only what concerns this load; unrelated drivers log too.
+                let lines: Vec<String> =
+                    k.drain().unwrap_or_default().into_iter().filter(|l| is_load_related(l, name)).collect();
                 if !lines.is_empty() {
                     msg.push_str("\nkernel log:\n  ");
                     msg.push_str(&lines.join("\n  "));
@@ -713,6 +715,25 @@ impl<K: KernelOps> Agent<K> {
         let v = self.load_cached(&self.cache_dir(release, level)).ok()?;
         Some((v.manifest, v.signer))
     }
+}
+
+/// Kernel log lines that explain a failed module load.
+fn is_load_related(line: &str, module: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "livepatch",
+        "module verification",
+        "module signature",
+        "Loading of",
+        "Lockdown",
+        "PKCS#7",
+        "X.509",
+        "Key was rejected",
+        "Unknown symbol",
+        "disagrees about version",
+        "version magic",
+        "BTF",
+    ];
+    line.contains(module) || MARKERS.iter().any(|m| line.contains(m))
 }
 
 fn strip_sympos(f: &str) -> &str {

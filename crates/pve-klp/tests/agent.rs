@@ -309,12 +309,18 @@ fn secure_boot_without_mok_fails_cleanly() {
     let k = kernel();
     // Secure Boot on, certificate not enrolled: the kernel rejects it.
     k.st.borrow_mut().require_signature = true;
+    k.st.borrow_mut().kmsg_on_load = vec![
+        "softdog: soft_reboot_cmd=<not set> soft_active_on_boot=0".into(),
+        "Loading of module with unavailable key is rejected".into(),
+    ];
     let m = env.manifest(1);
     let unsigned = ko(&m.module_name, KVER, false);
     env.publish(m, &unsigned);
     let a = env.agent(k);
     let e = a.apply(&explicit()).unwrap_err();
     assert!(matches!(e, ApplyError::Failed(ref s) if s.contains("mok enroll")), "{e}");
+    assert!(e.to_string().contains("unavailable key is rejected"), "{e}");
+    assert!(!e.to_string().contains("softdog"), "unrelated kernel log lines must not end up in the error: {e}");
     assert!(a.kernel.loaded().is_empty(), "no half-loaded state");
     assert!(a.kernel.active().is_empty());
     let st = env.state().get(KVER);

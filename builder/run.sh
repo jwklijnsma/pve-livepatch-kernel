@@ -11,6 +11,7 @@
 #   ENGINE     podman (default) or docker
 #   KEYS       directory with module.priv and module-cert.der (default: ./keys)
 #   CATALOG    catalog directory inside the repository (default: catalog)
+#   MIN_FREE_GB  free space required in build/ (default 60, 15 with a cached tree)
 set -euo pipefail
 KVER=${1:?usage: builder/run.sh <kver> <level> [previous-level.ko]}
 LEVEL=${2:?level}
@@ -31,6 +32,17 @@ for f in module.priv module-cert.der; do
   [ -f "$KEYS/$f" ] || { echo "run.sh: $KEYS/$f missing (see docs/self-hosting.md)" >&2; exit 1; }
 done
 case "$KEYS" in "$ROOT"/*) ;; *) echo "run.sh: KEYS must be inside $ROOT (it is mounted into the container)" >&2; exit 1 ;; esac
+
+# One build tree (original + patched kernel) needs about 52 GB; a rebuild
+# with a cached original far less. Fail now rather than after an hour.
+mkdir -p "$ROOT/build"
+if [ -d "$ROOT/build/$KVER/src/.git" ]; then NEED_GB=${MIN_FREE_GB:-15}; else NEED_GB=${MIN_FREE_GB:-60}; fi
+FREE_GB=$(df -Pk "$ROOT/build" | awk 'NR == 2 { print int($4 / 1024 / 1024) }')
+if [ "$FREE_GB" -lt "$NEED_GB" ]; then
+  echo "run.sh: only ${FREE_GB} GB free in $ROOT/build, need about ${NEED_GB} GB" >&2
+  echo "        (remove old trees in build/, or set MIN_FREE_GB to override)" >&2
+  exit 1
+fi
 
 "$ENGINE" build -q -t "$IMAGE" "$ROOT/builder" >/dev/null
 IMAGE_ID=$("$ENGINE" image inspect "$IMAGE" --format '{{.Id}}')

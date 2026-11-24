@@ -1,3 +1,11 @@
+pve-klp (0.1.5-1) trixie; urgency=medium
+
+  * Load errors only quote kernel log lines that concern the module.
+  * Build side: catalog patches must also apply together, in order;
+    run.sh checks free disk space first.
+
+ -- Christopher Sakel <christopher.sakel@icloud.com>  Tue, 24 Nov 2026 06:47:27 +0000
+
 pve-klp (0.1.4-1) trixie; urgency=medium
 
   * /etc/pve-klp/pve-klp.toml is no longer a conffile: upgrades never prompt.
