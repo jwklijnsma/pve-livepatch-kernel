@@ -61,6 +61,7 @@ v1/<kver>/source/linux-<kver>-<sha>.tar.xz     kernel source, once per commit
 v1/<kver>/<level>/                             build.log, functions, Gate A, QEMU log
 v1/<kver>/<ring> -> <ring>.versions/<level>-<time>/
                     manifest.json, manifest.json.minisig
+v1/revoked.json, v1/revoked.json.minisig       revocation list (optional)
 ```
 
 Agents read `v1/<kver>/<ring>/manifest.json`; the symlink makes manifest and
@@ -100,8 +101,15 @@ itself.
 - **Anti-rollback:** the highest level ever accepted per kernel is persisted
   and survives `revert`. A lower level is never applied, not even if it is
   validly signed.
-- **Rollback means a new level.** If level N is bad, maintainers publish N+1
-  with the content of N−1. Locally, `revert` disables the patch and holds.
+- **Rollback means a new level, or a revocation.** If level N is bad,
+  maintainers publish N+1 with the content of N−1, or revoke N (below).
+  Locally, `revert` disables the patch and holds.
+- **Revocation.** `v1/revoked.json` (signed with the manifest key, sequence
+  only goes up, cached locally) lists modules by hash. A revoked module is
+  never loaded, not even by an explicit `apply`; the boot reload skips it.
+  If it is active, `apply` (the timer) puts the highest cached level below
+  it back by atomic replace, or unloads it. An older list is ignored as a
+  replay; a list with a bad signature stops the run.
 - **Taint:** after loading, new taint flags fail the post-checks, except
   those the livepatch module itself carries (`/sys/module/<m>/taint`:
   `O`, `E`, `K`). On a host without ZFS, the module's own `O` is the first
@@ -160,6 +168,7 @@ itself.
 | `/etc/hvpatch/hooks.d/*` | post-transition hooks |
 | `/var/lib/hvpatch/state.json` | per kernel: highest accepted, desired level, hold, phase, last error |
 | `/var/lib/hvpatch/cache/<kver>/<level>/` | module, manifest and signature for boot and restore (three levels kept) |
+| `/var/lib/hvpatch/revoked.json` (+ `.minisig`) | last accepted revocation list |
 | `/run/hvpatch/effective_version`, `fixed_cves` | effective kernel version and CVEs fixed live, for scanners |
 | `/var/lib/prometheus/node-exporter/hvpatch.prom` | metrics |
 

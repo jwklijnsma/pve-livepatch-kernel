@@ -36,6 +36,8 @@ All notable changes to this project are documented here. The format follows
   load.
 - **GPL:** every build has a corresponding-source bundle (patches, kernel
   tarball, config, toolchain, scripts), published next to the module.
+- The boot reload of a level below the highest one accepted (after a
+  revocation) is a restore, not a rollback.
 - `resolve` refuses "already contained" when it contradicts the entry's
   `fixed_in_pve`; Gate A treats a missing shipped module as an error;
   compressed shipped modules are unpacked; `build.sh` starts from an empty
@@ -48,6 +50,12 @@ All notable changes to this project are documented here. The format follows
   plain directories before the next stage.
 
 ### Added
+
+- **Signed revocation list** (`v1/revoked.json`, `builder/revoke.sh`,
+  `hvpatch-tool revoke`): a revoked module is never loaded again, not even
+  explicitly; nodes that run it go back to the highest cached level below
+  it on their next timer run, or unload it. Sequence numbers only go up
+  (no replay); the list is cached for the boot reload.
 
 - **Reboot recommendation:** `hvpatch status` names a newer installed
   kernel that waits for the next reboot (reboot reason, exit code 12,

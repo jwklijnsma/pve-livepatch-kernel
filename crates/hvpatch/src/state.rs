@@ -84,6 +84,8 @@ pub struct KernelState {
 #[serde(default)]
 pub struct State {
     pub kernels: BTreeMap<String, KernelState>,
+    /// Highest revocation list sequence accepted; older lists are replays.
+    pub revocation_sequence: u64,
 }
 
 /// Keep state for this many kernels; older entries are dropped.

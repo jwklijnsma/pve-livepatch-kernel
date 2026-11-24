@@ -13,6 +13,7 @@ use hvpatch::report;
 use hvpatch::state::{Attempt, Phase, State};
 use klp_core::manifest::{Fix, Manifest, NotCovered};
 use klp_core::naming::module_name;
+use klp_core::revocation::{RevocationList, Revoked};
 use klp_core::sig::{SecretKey, TrustStore};
 use object::write::{Object as WObject, Symbol, SymbolSection};
 use object::{Architecture, BinaryFormat, Endianness, SectionKind, SymbolFlags, SymbolKind, SymbolScope};
@@ -146,6 +147,34 @@ impl Env {
 
     fn state(&self) -> State {
         State::load(&self.cfg.state_file()).unwrap()
+    }
+
+    /// Sign and publish a revocation list like `hvpatch-tool revoke` + `sign`.
+    fn publish_revocations(&self, list: &RevocationList) {
+        let dir = self.repo.join("v1");
+        std::fs::create_dir_all(&dir).unwrap();
+        let json = list.to_json_pretty();
+        std::fs::write(dir.join("revoked.json"), &json).unwrap();
+        let sig = key().sign(json.as_bytes(), &format!("revocations:{}", list.sequence)).unwrap();
+        std::fs::write(dir.join("revoked.json.minisig"), sig).unwrap();
+    }
+}
+
+fn revocations(entries: &[&Manifest], sequence: u64) -> RevocationList {
+    RevocationList {
+        format: 1,
+        sequence,
+        issued: now(),
+        revoked: entries
+            .iter()
+            .map(|m| Revoked {
+                sha256: m.sha256.clone(),
+                kernel: m.kernel.clone(),
+                level: m.level,
+                reason: "regression in the field".into(),
+                revoked: now(),
+            })
+            .collect(),
     }
 }
 
@@ -919,4 +948,71 @@ fn module_without_atomic_replace_is_backed_out() {
     let e = a.apply(&explicit()).unwrap_err();
     assert!(e.to_string().contains("without atomic replace"), "{e}");
     assert!(a.kernel.loaded().is_empty());
+}
+
+// --- Revocation ------------------------------------------------------------
+
+#[test]
+fn revoked_active_level_is_replaced_by_the_one_below() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    let m2 = env.publish_level(2);
+    a.apply(&explicit()).unwrap();
+    assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p2"]);
+
+    env.publish_revocations(&revocations(&[&m2], 1));
+    // The ring still offers level 2: it is not loaded again, level 1 is back.
+    let out = a.apply(&ApplyOpts::default()).unwrap();
+    assert!(matches!(&out, Outcome::Skipped(why) if why.contains("revoked")), "{out:?}");
+    assert_eq!(a.kernel.active(), vec!["klp_hvp_7_3_5_1_p1"]);
+    assert_eq!(env.state().get(KVER).desired_level, Some(1));
+    // Not even an explicit apply loads a revoked level.
+    assert!(matches!(a.apply(&explicit()).unwrap(), Outcome::Skipped(_)));
+    // Boot after a reboot skips it as well (cached list, no network).
+    std::fs::remove_dir_all(&env.repo).unwrap();
+    let b = env.agent(kernel());
+    assert!(matches!(b.boot().unwrap(), Outcome::Applied { level: 1, .. }));
+    // A fixed level 3 is picked up normally.
+}
+
+#[test]
+fn revoked_only_level_is_unloaded() {
+    let env = Env::new();
+    let m1 = env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    env.publish_revocations(&revocations(&[&m1], 1));
+    let r = report::collect(&a).unwrap();
+    assert!(r.hints.is_empty() || !r.hints.iter().any(|h| h.contains("revoked")), "list not fetched yet");
+    a.apply(&ApplyOpts::default()).unwrap();
+    assert!(a.kernel.active().is_empty());
+    let st = env.state();
+    assert_eq!(st.get(KVER).phase, Phase::Reverted);
+    assert!(st.get(KVER).last_error.as_deref().unwrap().contains("revoked"));
+    assert!(!st.get(KVER).held, "a revocation is not an operator hold: level 2 may come");
+    env.publish_level(2);
+    assert!(matches!(a.apply(&ApplyOpts::default()).unwrap(), Outcome::Applied { level: 2, .. }));
+}
+
+#[test]
+fn revocation_list_replay_and_bad_signature() {
+    let env = Env::new();
+    let m1 = env.publish_level(1);
+    let a = env.agent(kernel());
+    env.publish_revocations(&revocations(&[&m1], 5));
+    a.apply(&explicit()).unwrap();
+    assert!(a.kernel.active().is_empty(), "revoked level 1 must not load");
+    assert_eq!(env.state().revocation_sequence, 5);
+    // An older, empty list (replay) does not un-revoke it.
+    env.publish_revocations(&revocations(&[], 4));
+    a.apply(&explicit()).unwrap();
+    assert!(a.kernel.active().is_empty());
+    assert!(a.log_lines().iter().any(|l| l.contains("older than 5")));
+    // A tampered list is rejected.
+    let f = env.repo.join("v1/revoked.json");
+    let tampered = std::fs::read_to_string(&f).unwrap().replace("\"sequence\": 4", "\"sequence\": 9");
+    std::fs::write(&f, tampered).unwrap();
+    assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(e)) if e.contains("revocation list")));
 }

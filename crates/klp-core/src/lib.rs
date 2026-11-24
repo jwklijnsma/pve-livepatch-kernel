@@ -7,6 +7,7 @@ pub mod elf;
 pub mod manifest;
 pub mod naming;
 pub mod policy;
+pub mod revocation;
 pub mod sig;
 
 pub use manifest::Manifest;

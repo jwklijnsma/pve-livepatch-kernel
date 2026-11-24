@@ -99,6 +99,19 @@ succeed.
 In a Proxmox VE cluster, a lock in pmxcfs lets only one node load a
 livepatch at a time; without quorum nothing is loaded
 .RB ( cluster_lock ).
+.PP
+The repository can revoke modules with a signed list
+.RI ( v1/revoked.json ).
+A revoked module is never loaded, not even by an explicit
+.BR apply .
+If it is active,
+.B apply
+puts the highest cached level below it back, or unloads it.
+.PP
+.B status
+reports a newer installed kernel of the same flavor as a reboot reason:
+livepatches bridge the time to the maintenance window, they do not replace
+booting the new kernel.
 .SH VERIFICATION
 Before loading,
 .B hvpatch
@@ -171,7 +184,7 @@ vulnerability scanners;
 lists the CVEs fixed live.
 .TP
 .I /var/lib/hvpatch/
-State and module cache.
+State, module cache and the last accepted revocation list.
 .TP
 .I /var/lib/prometheus/node-exporter/hvpatch.prom
 Metrics for the node_exporter textfile collector.

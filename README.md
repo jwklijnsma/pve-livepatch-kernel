@@ -59,7 +59,8 @@ open, and without making you trust a third party.
   If a new level misbehaves, the previous one comes back automatically.
 - **Learns from failures.** A level that failed or crashed a host is
   quarantined and never loaded again automatically; in a cluster only one
-  node loads at a time.
+  node loads at a time. A level that misbehaves in the field can be revoked
+  centrally: nodes go back to the level before it.
 - **Fits your tooling.** Exit codes, `--json`, Prometheus metrics, hook
   scripts. Ansible decides the order in your fleet; there is no control
   server.

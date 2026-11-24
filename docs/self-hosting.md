@@ -165,7 +165,21 @@ loads the module anyway but cannot verify the signature: every load taints
 the kernel with `E` ("signature and/or required key missing"). The agent's
 manifest signature check is what protects these hosts.
 
-## 7. Rollout
+## 7. Withdrawing a level
+
+If a level misbehaves in the field, revoke it:
+
+```bash
+MANIFEST_KEY=~/hvpatch-keys/manifest.secret \
+  builder/revoke.sh /srv/klp 7.3.5-1-pve 2 "regression: soft lockups under heavy vhost load"
+```
+
+Nodes stop loading level 2 and, on their next timer run, put the highest
+cached level below it back (or unload it if there is none). Then publish a
+fixed level 3. The list's sequence number only goes up, so an attacker who
+can only replay old files cannot un-revoke anything.
+
+## 8. Rollout
 
 The agent only knows its ring. The fleet order comes from your configuration
 management: canary node first, then one node per cluster, then the rest,

@@ -126,6 +126,16 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         reboot_reasons.push(format!("kernel {k} is installed but not running: boot it in the next maintenance window"));
     }
     let mut hints = leftover_hints(agent, &patches);
+    if let (Some(a), Some((m, _))) = (&active, &cached) {
+        if a.level == Some(m.level) {
+            if let Some(r) = crate::agent::revoked_entry(&agent.cached_revocations(), &kernel, m) {
+                hints.push(format!(
+                    "the active level {} is revoked ({}); the next `hvpatch apply` takes it out of service",
+                    m.level, r.reason
+                ));
+            }
+        }
+    }
     if ks.phase == Phase::Failed {
         if ks.stuck {
             reboot_reasons.push("a livepatch transition could neither complete nor be reversed; see last_error".into());

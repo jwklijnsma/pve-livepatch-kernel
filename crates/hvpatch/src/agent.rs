@@ -11,6 +11,9 @@
 //! * A level that failed, or whose load was interrupted (crash, reboot,
 //!   killed agent), is quarantined: neither the timer nor the boot unit
 //!   loads it again. Only an explicit `apply` retries it.
+//! * A revoked level (signed `v1/revoked.json`) is never loaded, not even
+//!   explicitly; if it is active, `apply` puts the highest cached level
+//!   below it back, or unloads it.
 
 use std::cell::RefCell;
 use std::fs::File;
@@ -23,6 +26,7 @@ use chrono::{DateTime, Utc};
 use klp_core::manifest::Manifest;
 use klp_core::naming::{is_ours, level_from_module_name};
 use klp_core::policy::{self, Decision, Mode, NodeFacts};
+use klp_core::revocation::{self, RevocationList};
 use klp_core::sig::TrustStore;
 use sha2::{Digest, Sha256};
 
@@ -33,6 +37,7 @@ use crate::repo::{Repo, RepoError};
 use crate::state::{Attempt, Phase, Quarantine, State, write_atomic};
 
 const MAX_MANIFEST: u64 = 1 << 20;
+const REVOCATION_LIST: &str = "v1/revoked.json";
 const MAX_SIGNATURE: u64 = 64 << 10;
 /// Livepatch modules are a few MB; anything this big is not one.
 const MAX_MODULE: u64 = 32 << 20;
@@ -217,8 +222,10 @@ impl<K: KernelOps> Agent<K> {
             return Ok(Outcome::Skipped("held after revert".into()));
         }
         self.reconcile(&mut state, &release)?;
-        let active = self.preflight(opts.replace_foreign)?;
         let repo = self.repo.as_ref().ok_or_else(|| anyhow!("no repository configured"))?;
+        let revoked = self.refresh_revocations(repo.as_ref(), &mut state)?;
+        self.withdraw_revoked(&mut state, &release, &revoked)?;
+        let active = self.preflight(opts.replace_foreign)?;
 
         let base = format!("v1/{release}/{}", self.cfg.ring);
         let v = match self.fetch_verified(repo.as_ref(), &base) {
@@ -235,6 +242,11 @@ impl<K: KernelOps> Agent<K> {
         let m = &v.manifest;
         self.log(format!("manifest {} level {} ring {} signed by {}", m.kernel, m.level, m.ring, v.signer));
 
+        if let Some(r) = revoked_entry(&revoked, &release, m) {
+            let why = format!("level {} is revoked: {}", m.level, r.reason);
+            self.log(why.clone());
+            return Ok(Outcome::Skipped(why));
+        }
         if let Some(q) = state.get(&release).quarantined.get(&m.sha256).cloned() {
             if !opts.explicit {
                 let why = format!(
@@ -361,6 +373,119 @@ impl<K: KernelOps> Agent<K> {
         self.cluster.borrow_mut().take();
         res?;
         Ok(warnings)
+    }
+
+    /// Fetch, verify and cache the revocation list. Without one in the
+    /// repository (or when the repository is unreachable) the cached list
+    /// applies; a list older than one accepted before is a replay and is
+    /// ignored; a list with a bad signature stops the run.
+    fn refresh_revocations(&self, repo: &dyn Repo, state: &mut State) -> Result<RevocationList, ApplyError> {
+        let cached = self.cached_revocations();
+        let mut fetched = None;
+        // List and signature are two files: a reader can catch the publisher
+        // between them, so a mismatch is fetched once more.
+        for attempt in 0..2 {
+            let raw = match repo.get(REVOCATION_LIST, revocation::MAX_SIZE) {
+                Ok(b) => b,
+                Err(RepoError::NotFound(_)) => return Ok(cached),
+                Err(RepoError::Other(e)) => {
+                    self.log(format!("revocation list not available ({e:#}); using the cached one"));
+                    return Ok(cached);
+                }
+            };
+            let sig = repo
+                .get(&format!("{REVOCATION_LIST}.minisig"), MAX_SIGNATURE)
+                .map_err(|e| ApplyError::Rejected(format!("revocation list signature missing: {e}")))?;
+            match self.verify_revocations(&raw, &sig) {
+                Ok(list) => {
+                    fetched = Some((list, raw, sig));
+                    break;
+                }
+                Err(e) if attempt == 0 => {
+                    self.log(format!("{e:#}; fetching the revocation list once more"));
+                    self.kernel.sleep(Duration::from_secs(2));
+                }
+                Err(e) => return Err(ApplyError::Rejected(format!("{e:#}"))),
+            }
+        }
+        let (list, raw, sig) = fetched.expect("verified or returned");
+        if list.sequence < state.revocation_sequence {
+            self.log(format!(
+                "ignoring revocation list {}: older than {} accepted before",
+                list.sequence, state.revocation_sequence
+            ));
+            return Ok(cached);
+        }
+        if list.sequence > state.revocation_sequence || cached.sequence != list.sequence {
+            let f = self.cfg.revocation_file();
+            write_atomic(&f, &raw)?;
+            write_atomic(&f.with_extension("json.minisig"), &sig)?;
+            state.revocation_sequence = list.sequence;
+            state.save(&self.cfg.state_file())?;
+        }
+        Ok(list)
+    }
+
+    fn verify_revocations(&self, raw: &[u8], sig: &[u8]) -> anyhow::Result<RevocationList> {
+        let sig = std::str::from_utf8(sig).context("revocation list signature is not text")?;
+        self.trust.verify(raw, sig).context("revocation list signature")?;
+        RevocationList::from_json(raw).context("revocation list")
+    }
+
+    /// The last accepted revocation list, verified again (boot works from
+    /// it without network).
+    pub fn cached_revocations(&self) -> RevocationList {
+        let f = self.cfg.revocation_file();
+        let (Ok(raw), Ok(sig)) = (std::fs::read(&f), std::fs::read(f.with_extension("json.minisig"))) else {
+            return RevocationList::default();
+        };
+        self.verify_revocations(&raw, &sig).unwrap_or_else(|e| {
+            self.log(format!("ignoring the cached revocation list: {e:#}"));
+            RevocationList::default()
+        })
+    }
+
+    /// Take an active level that was revoked out of service: put the
+    /// highest cached level below it back by atomic replace, or unload it.
+    fn withdraw_revoked(&self, state: &mut State, release: &str, revoked: &RevocationList) -> Result<(), ApplyError> {
+        if revoked.revoked.is_empty() {
+            return Ok(());
+        }
+        let Some(active) = self.kernel.livepatches()?.into_iter().find(|p| is_ours(&p.name) && p.enabled) else {
+            return Ok(());
+        };
+        let Some(level) = level_from_module_name(&active.name) else { return Ok(()) };
+        let entry = match self.cached_manifest(release, level) {
+            Some((m, _)) => revoked_entry(revoked, release, &m).cloned(),
+            None => revoked.revoked.iter().find(|r| r.kernel == release && r.level == level).cloned(),
+        };
+        let Some(r) = entry else { return Ok(()) };
+        self.log(format!("active level {level} is revoked ({}); taking it out of service", r.reason));
+        let fallback = self.cached_levels(release).into_iter().filter(|l| *l < level).find(|l| {
+            self.cached_manifest(release, *l).is_some_and(|(m, _)| {
+                revoked_entry(revoked, release, &m).is_none() && !state.get(release).quarantined.contains_key(&m.sha256)
+            })
+        });
+        if let Some(prev) = fallback {
+            let lock = self.acquire_cluster_lock()?;
+            *self.cluster.borrow_mut() = lock;
+            let res = self.restore(state, release, prev);
+            self.cluster.borrow_mut().take();
+            match res {
+                Ok(()) => return Ok(()),
+                Err(e) => self.log(format!("putting level {prev} back failed: {e}")),
+            }
+        }
+        if self.kernel.patch(&active.name)?.is_some_and(|p| p.enabled) {
+            if let Err(e) = self.back_out(&active.name) {
+                self.save_stuck(state, release, e.clone())?;
+                return Err(ApplyError::Failed(e));
+            }
+        }
+        state.kernel(release).desired_level = None;
+        self.save_phase(state, release, Phase::Reverted, Some(format!("level {level} was revoked: {}", r.reason)))?;
+        self.write_runtime_files(release, None);
+        Ok(())
     }
 
     /// After an error, never leave the stored phase at "in progress".
@@ -1073,14 +1198,23 @@ impl<K: KernelOps> Agent<K> {
             return Ok(Outcome::NothingToLoad);
         };
         let active = self.preflight(false)?;
+        let revoked = self.cached_revocations();
         for level in self.cached_levels(&release).into_iter().filter(|l| *l <= desired) {
             let dir = self.cache_dir(&release, level);
             let Ok(v) = self.load_cached(&dir) else { continue };
+            if let Some(r) = revoked_entry(&revoked, &release, &v.manifest) {
+                self.log(format!("level {level} is revoked ({}); not reloading it", r.reason));
+                continue;
+            }
             if let Some(q) = state.get(&release).quarantined.get(&v.manifest.sha256) {
                 self.log(format!("level {level} is quarantined ({}); not reloading it", q.reason));
                 continue;
             }
-            let mode = if level == desired { Mode::BootFromCache } else { Mode::Restore };
+            // Below the highest accepted level, the agent itself went back
+            // (post-check restore, revocation): reload it as a restore,
+            // not as a rollback.
+            let highest = state.get(&release).highest_accepted;
+            let mode = if level == desired && level >= highest { Mode::BootFromCache } else { Mode::Restore };
             if mode == Mode::Restore {
                 self.log(format!("reloading level {level} instead of {desired}"));
             }
@@ -1145,6 +1279,16 @@ impl<K: KernelOps> Agent<K> {
         let v = self.load_cached(&self.cache_dir(release, level)).ok()?;
         Some((v.manifest, v.signer))
     }
+}
+
+/// The revocation entry for this manifest: by module hash, or by kernel and
+/// level (a level is never published twice with different bytes).
+pub fn revoked_entry<'a>(
+    list: &'a RevocationList,
+    release: &str,
+    m: &Manifest,
+) -> Option<&'a klp_core::revocation::Revoked> {
+    list.find(&m.sha256).or_else(|| list.revoked.iter().find(|r| r.kernel == release && r.level == m.level))
 }
 
 /// Kernel log lines that explain a failed module load.

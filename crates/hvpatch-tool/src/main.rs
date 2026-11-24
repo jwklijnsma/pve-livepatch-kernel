@@ -12,6 +12,7 @@ use chrono::{Duration, Utc};
 use clap::{Parser, Subcommand};
 use klp_core::manifest::{FORMAT_VERSION, Manifest, RINGS};
 use klp_core::naming;
+use klp_core::revocation::{RevocationList, Revoked};
 use klp_core::sig::{SecretKey, TrustStore};
 use sha2::{Digest, Sha256};
 
@@ -170,6 +171,22 @@ enum Cmd {
         ring: String,
         #[arg(long)]
         out: PathBuf,
+    },
+    /// Add a module to the revocation list (created if missing; the
+    /// sequence goes up). Sign the result with `sign` afterwards.
+    Revoke {
+        /// revoked.json to update in place.
+        #[arg(long)]
+        list: PathBuf,
+        /// The published module file.
+        #[arg(long)]
+        module: PathBuf,
+        #[arg(long)]
+        kernel: String,
+        #[arg(long)]
+        level: u32,
+        #[arg(long)]
+        reason: String,
     },
 }
 
@@ -418,6 +435,25 @@ fn run(cli: Cli) -> Result<bool> {
             }
             m.ring = ring;
             write(&out, m.to_json_pretty().as_bytes())?;
+            Ok(true)
+        }
+        Cmd::Revoke { list, module, kernel, level, reason } => {
+            let mut l = match std::fs::read(&list) {
+                Ok(b) => RevocationList::from_json(&b).with_context(|| format!("reading {}", list.display()))?,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => RevocationList::default(),
+                Err(e) => return Err(e).with_context(|| format!("reading {}", list.display())),
+            };
+            let expected = naming::module_name(&kernel, level);
+            let file_name = module.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+            if file_name != format!("{expected}.ko") {
+                bail!("{} is not the module of {kernel} level {level} ({expected}.ko)", module.display());
+            }
+            let sha = hex::encode(Sha256::digest(read(&module)?));
+            let now = Utc::now();
+            l.revoke(Revoked { sha256: sha.clone(), kernel, level, reason, revoked: now }, now);
+            l.validate()?;
+            write(&list, l.to_json_pretty().as_bytes())?;
+            println!("revoked {sha} ({expected}); list sequence {}", l.sequence);
             Ok(true)
         }
     }

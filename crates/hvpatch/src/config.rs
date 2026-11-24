@@ -118,6 +118,11 @@ impl Config {
         self.state_dir.join("cache")
     }
 
+    /// Last accepted revocation list (+ `.minisig`).
+    pub fn revocation_file(&self) -> PathBuf {
+        self.state_dir.join("revoked.json")
+    }
+
     pub fn state_file(&self) -> PathBuf {
         self.state_dir.join("state.json")
     }
