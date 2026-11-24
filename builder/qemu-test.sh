@@ -243,7 +243,9 @@ LOG="$OUT/qemu.log"
 timeout 1800 qemu-system-x86_64 -machine q35,accel="$ACCEL" -cpu "$CPU" -m 2048 -smp 4 \
   -nographic -no-reboot -kernel "$SHIPPED/vmlinuz" -initrd "$TMP/initrd.gz" \
   -append "console=ttyS0 rdinit=/init panic=-1 loglevel=4" > "$LOG" 2>&1 || true
-tr -d '\r' < "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
+# Drop CRs and terminal control sequences (the firmware and the 7.0 kernel
+# clear the console, which lands in front of the first HVPATCH: line).
+tr -d '\r' < "$LOG" | sed -E 's/\x1b(\[[0-9;?]*[A-Za-z]|[@-Z\\^_`a-z])//g' > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 grep '^HVPATCH:STEP:' "$LOG" | sed 's/^HVPATCH:STEP:/  /' >&2 || true
 if ! grep -q '^HVPATCH:OK$' "$LOG"; then
   grep '^HVPATCH:FAIL:' "$LOG" >&2 || true
@@ -251,6 +253,7 @@ if ! grep -q '^HVPATCH:OK$' "$LOG"; then
 fi
 
 # The booted kernel is the one the manifest is bound to.
+grep -q '^HVPATCH:NOTES:' "$LOG" || die "no HVPATCH:NOTES line in $LOG"
 BOOT_ID=$(grep '^HVPATCH:NOTES:' "$LOG" | cut -d: -f3 | python3 -I -c '
 import sys, struct
 b = bytes.fromhex(sys.stdin.read().strip()); o = 0

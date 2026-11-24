@@ -57,6 +57,8 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **`FROM_STAGE=3 builder/run.sh`** repeats only the QEMU stage for the
+  signed module already in `out/`.
 - `hvpatch-tool status-page`: static HTML overview of a repository (rings
   per kernel, CVEs fixed live, reboot-only CVEs, revoked levels).
 
@@ -112,6 +114,14 @@ other worse; they are fixed here.
 
 ### Fixed
 
+- **7.0 builds:** `fetch-shipped.sh` took `/usr/lib/modules/<kver>`
+  whenever it existed; the 7.0 packages ship the modules in
+  `/lib/modules/<kver>` and only the headers' build link in the former,
+  so Gate A found none of the shipped modules (and failed).
+- **QEMU stage:** terminal control sequences from the console (the 7.0
+  kernel clears the screen) are removed from the log before it is
+  evaluated; they hid the first `HVPATCH:` line, and the stage ended
+  without a message. A missing build-id line is now reported.
 - **Kernel log check could be triggered by tenants.** Any line containing
   "general protection fault" or "BUG:" backed a patch out, including a
   crashing user process ("traps: …", info level) or a process named "BUG:".

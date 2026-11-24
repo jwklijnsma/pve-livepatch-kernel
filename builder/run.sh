@@ -23,12 +23,16 @@
 #   CATALOG       catalog directory inside the repository (default: catalog)
 #   MIN_FREE_GB   free space required in build/ (default 60, 15 with a cached tree)
 #   CYCLES        patch/unpatch cycles in the QEMU stage (default 5)
+#   FROM_STAGE    3: only repeat the QEMU stage for the signed module
+#                 already in build/<kver>/out (default 1: everything)
 set -euo pipefail
 KVER=${1:?usage: builder/run.sh <kver> <level> [previous-level.ko]}
 LEVEL=${2:?level}
 PREV=${3:-}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 ENGINE=${ENGINE:-podman}
+FROM_STAGE=${FROM_STAGE:-1}
+case "$FROM_STAGE" in 1|3) ;; *) echo "run.sh: FROM_STAGE must be 1 or 3" >&2; exit 1 ;; esac
 KEYS=${KEYS:-$ROOT/keys}
 CATALOG=${CATALOG:-catalog}
 IMAGE=hvpatch-builder
@@ -89,6 +93,11 @@ if [ ! -s "$BUILD/shipped/build-id" ]; then
     "$IMAGE" /opt/hvpatch/builder/fetch-shipped.sh "$KVER" "$W/shipped"
 fi
 
+if [ "$FROM_STAGE" = 3 ]; then
+  compgen -G "$BUILD/out/klp_*.ko" >/dev/null && [ -s "$BUILD/out/manifest.json" ] \
+    || die "FROM_STAGE=3 needs a signed module and manifest.json in $BUILD/out"
+  rm -f "$BUILD/out/qemu.ok"
+else
 echo "run.sh: [1/3] build (no keys)"
 "$ENGINE" run --rm -v "$ROOT:/work:ro" "${SHIPPED_RO[@]}" \
   -v "$BUILD/src:$W/src" -v "$BUILD/out:$W/out" -v "$BUILD/cache:$W/cache" -w /work \
@@ -105,6 +114,7 @@ echo "run.sh: [2/3] sign (key only here, no tree, no network)"
   -v "$BUILD/out:$W/out" "${SHIPPED_RO[@]}" -v "$KEYS:/keys:ro" \
   -e BUILDER_IMAGE="$IMAGE_ID" -e MODULE_KEY=/keys/module.priv -e MODULE_CERT=/keys/module-cert.der \
   "$IMAGE" /opt/hvpatch/builder/sign-module.sh "$KVER" "$LEVEL" "$W"
+fi
 
 check_dirs
 echo "run.sh: [3/3] QEMU stage (no tree, no keys, no network)"

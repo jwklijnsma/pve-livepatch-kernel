@@ -93,6 +93,10 @@ KEYS=~/hvpatch-keys builder/run.sh 7.3.5-1-pve 1
    functions in sysfs, the kernel log and the build-id. Writes
    `out/qemu.ok`.
 
+To repeat only the QEMU stage for the signed module already in `out/`
+(after changing the test, or with more `CYCLES`):
+`FROM_STAGE=3 builder/run.sh <kver> <level> [previous-level.ko]`.
+
 Output: `build/7.3.5-1-pve/out/`. One build tree needs about 52 GB;
 `run.sh` checks for 60 GB free (15 GB when the tree is cached) before it
 starts. Remove trees of kernels you no longer serve.
