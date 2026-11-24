@@ -93,11 +93,17 @@ if [ ! -s "$BUILD/shipped/build-id" ]; then
     "$IMAGE" /opt/hvpatch/builder/fetch-shipped.sh "$KVER" "$W/shipped"
 fi
 
+# What the sign stage produced, recorded where no container can write
+# (build/<kver> itself is never mounted). FROM_STAGE=3 tests only that.
+SIGNED="$BUILD/signed.sha256"
+signed_state() { (cd "$BUILD/out" && sha256sum klp_*.ko manifest.json); }
 if [ "$FROM_STAGE" = 3 ]; then
-  compgen -G "$BUILD/out/klp_*.ko" >/dev/null && [ -s "$BUILD/out/manifest.json" ] \
-    || die "FROM_STAGE=3 needs a signed module and manifest.json in $BUILD/out"
+  [ -s "$SIGNED" ] || die "FROM_STAGE=3: no completed sign stage recorded for $KVER; run all stages"
+  [ "$(signed_state 2>/dev/null)" = "$(cat "$SIGNED")" ] \
+    || die "FROM_STAGE=3: build/$KVER/out differs from what the sign stage produced; run all stages"
   rm -f "$BUILD/out/qemu.ok"
 else
+rm -f "$SIGNED"
 echo "run.sh: [1/3] build (no keys)"
 "$ENGINE" run --rm -v "$ROOT:/work:ro" "${SHIPPED_RO[@]}" \
   -v "$BUILD/src:$W/src" -v "$BUILD/out:$W/out" -v "$BUILD/cache:$W/cache" -w /work \
@@ -114,6 +120,8 @@ echo "run.sh: [2/3] sign (key only here, no tree, no network)"
   -v "$BUILD/out:$W/out" "${SHIPPED_RO[@]}" -v "$KEYS:/keys:ro" \
   -e BUILDER_IMAGE="$IMAGE_ID" -e MODULE_KEY=/keys/module.priv -e MODULE_CERT=/keys/module-cert.der \
   "$IMAGE" /opt/hvpatch/builder/sign-module.sh "$KVER" "$LEVEL" "$W"
+check_dirs
+signed_state > "$SIGNED"
 fi
 
 check_dirs
