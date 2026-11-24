@@ -1,0 +1,4 @@
+contrib/checkmk
+contrib/hooks
+contrib/ansible
+contrib/README.md

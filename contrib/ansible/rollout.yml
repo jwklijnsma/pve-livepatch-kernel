@@ -1,0 +1,29 @@
+---
+# Roll a livepatch level out: one node at a time, canary group first, stop
+# at the first node that does not end up healthy.
+#
+#   ansible-playbook -i inventory contrib/ansible/rollout.yml
+#
+# Inventory groups: hvpatch_canary (first), then hvpatch_nodes. In a
+# cluster the agent also serialises loads itself (pmxcfs lock).
+- name: Canary
+  hosts: hvpatch_canary
+  serial: 1
+  any_errors_fatal: true
+  tasks:
+    - ansible.builtin.import_tasks: tasks/apply.yml
+
+- name: Wait before the rest
+  hosts: localhost
+  gather_facts: false
+  tasks:
+    - ansible.builtin.pause:
+        minutes: "{{ hvpatch_canary_wait_minutes | default(60) }}"
+        prompt: "Canary done. Check dashboards and kernel logs; Enter continues"
+
+- name: Fleet
+  hosts: hvpatch_nodes:!hvpatch_canary
+  serial: "{{ hvpatch_batch | default(1) }}"
+  max_fail_percentage: 0
+  tasks:
+    - ansible.builtin.import_tasks: tasks/apply.yml

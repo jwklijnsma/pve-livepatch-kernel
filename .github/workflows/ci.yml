@@ -61,7 +61,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - run: shellcheck -x -S warning builder/*.sh
-      - run: shellcheck -s sh debian/hvpatch.postinst debian/hvpatch.postrm
+      - run: shellcheck -s sh debian/hvpatch.postinst debian/hvpatch.postrm contrib/checkmk/hvpatch contrib/hooks/90-notify
 
   deb:
     runs-on: ubuntu-24.04

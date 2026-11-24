@@ -1,0 +1,18 @@
+#!/bin/sh
+# Example hook: report every successful load to a webhook (Matrix, Slack,
+# ntfy, Gotify, ...). hvpatch runs hooks after the transition and its
+# checks; a non-zero exit backs the livepatch out, so this one never fails.
+#
+# Install: /etc/hvpatch/hooks.d/90-notify, owner root, mode 0755.
+# Configure: /etc/hvpatch/notify.env with NOTIFY_URL=https://...
+#
+# Environment from hvpatch: HVPATCH_KERNEL, HVPATCH_LEVEL, HVPATCH_MODULE,
+# HVPATCH_MODE (apply, boot or restore).
+# shellcheck source=/dev/null
+[ -r /etc/hvpatch/notify.env ] && . /etc/hvpatch/notify.env
+[ -n "${NOTIFY_URL:-}" ] || exit 0
+msg="$(hostname -f): hvpatch $HVPATCH_MODE level $HVPATCH_LEVEL on $HVPATCH_KERNEL ($HVPATCH_MODULE)"
+# ntfy takes the text as the body; for JSON webhooks use e.g.
+#   -H 'Content-Type: application/json' -d "{\"text\": \"$msg\"}"
+curl -fsS --max-time 10 -d "$msg" "$NOTIFY_URL" >/dev/null 2>&1 || true
+exit 0

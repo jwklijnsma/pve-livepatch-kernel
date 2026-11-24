@@ -54,6 +54,11 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **Integrations** (`contrib/`): Checkmk local check, notification hook
+  example, Ansible role and a rollout playbook (canary first, one node at a
+  time, stop at the first unhealthy node). Shipped as examples in the
+  Debian package.
+
 - **States for fixes with callbacks or shadow variables** (catalog
   `states`, manifest `states`): a level must carry every state of the
   active level at the same or a higher version, or the agent refuses it
@@ -86,7 +91,7 @@ All notable changes to this project are documented here. The format follows
   accepted, nothing new is loaded while the repository withholds it.
 
 - **Reboot recommendation:** `hvpatch status` names a newer installed
-  kernel that waits for the next reboot (reboot reason, exit code 12,
+  kernel that waits for the next reboot (reboot reason, exit code 10,
   metric `hvpatch_newer_kernel_installed`). Livepatches bridge the time to
   the maintenance window; they do not replace booting the new kernel.
 

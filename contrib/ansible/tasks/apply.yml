@@ -1,0 +1,21 @@
+---
+# hvpatch apply exit codes: 0 applied/active, 2 failed (backed out),
+# 3 rejected, 4 precondition, 1 other.
+- name: hvpatch apply
+  ansible.builtin.command: hvpatch apply
+  register: apply
+  changed_when: "'applied' in apply.stdout"
+  failed_when: apply.rc != 0
+
+- name: hvpatch status
+  ansible.builtin.command: hvpatch status --json
+  register: status
+  changed_when: false
+  # 0 ok, 10 reboot recommended: both healthy for a rollout.
+  failed_when: status.rc not in [0, 10]
+
+- name: Report
+  ansible.builtin.debug:
+    msg: >-
+      {{ inventory_hostname }}: level {{ (status.stdout | from_json).active.level | default('none') }},
+      reboot: {{ (status.stdout | from_json).reboot_reasons | default([]) | join('; ') or 'no' }}

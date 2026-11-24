@@ -1,0 +1,33 @@
+#!/bin/sh
+# Checkmk local check for hvpatch.
+# Install: /usr/lib/check_mk_agent/local/hvpatch (mode 0755). Read-only.
+#
+# OK    livepatch active, nothing pending
+# WARN  reboot recommended (not fixable live, or newer kernel installed),
+#       or no livepatch active
+# CRIT  last operation failed or in progress, or the manifest expired
+command -v hvpatch >/dev/null 2>&1 || exit 0
+json=$(hvpatch status --json 2>/dev/null)
+rc=$?
+summary=$(printf '%s' "$json" | python3 -c '
+import json, sys
+try:
+    s = json.load(sys.stdin)
+except Exception:
+    print("- hvpatch status unreadable")
+    sys.exit()
+level = (s.get("active") or {}).get("level") or 0
+live = len(s.get("covered", []))
+parts = ["kernel " + str(s.get("kernel")), "level %d" % level if level else "no livepatch active", "%d CVEs fixed live" % live]
+if s.get("reboot_reasons"):
+    parts.append("reboot: " + "; ".join(s["reboot_reasons"]))
+if s.get("last_error"):
+    parts.append("last error: " + s["last_error"].splitlines()[0])
+print("level=%d|cves_live=%d|quarantined=%d %s" % (level, live, len(s.get("quarantined", [])), ", ".join(parts)))
+' 2>/dev/null)
+case $rc in
+  0) state=0 ;;
+  10|11) state=1 ;;
+  *) state=2 ;;
+esac
+echo "$state hvpatch $summary"

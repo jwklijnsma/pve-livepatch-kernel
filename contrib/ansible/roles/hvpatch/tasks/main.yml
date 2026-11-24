@@ -1,0 +1,58 @@
+---
+- name: Install hvpatch (release package)
+  ansible.builtin.apt:
+    deb: "{{ hvpatch_package }}"
+  when: hvpatch_package != "apt"
+
+- name: Install hvpatch (APT repository)
+  ansible.builtin.apt:
+    name: hvpatch
+    state: latest
+    update_cache: true
+  when: hvpatch_package == "apt"
+
+- name: Copy the manifest key
+  ansible.builtin.copy:
+    src: "{{ hvpatch_manifest_key }}"
+    dest: /etc/hvpatch/trusted.d/repository.pub
+    owner: root
+    group: root
+    mode: "0644"
+  when: hvpatch_manifest_key != "" and not hvpatch_manifest_key.startswith("https://")
+
+- name: Point the agent at the repository
+  ansible.builtin.command:
+    argv: >-
+      {{ ['hvpatch', 'setup', '--repository', hvpatch_repository, '--ring', hvpatch_ring]
+         + (['--key', hvpatch_manifest_key] if hvpatch_manifest_key.startswith('https://') else []) }}
+  register: hvpatch_setup
+  changed_when: "' -> ' in hvpatch_setup.stdout or 'installed manifest key' in hvpatch_setup.stdout"
+  # 2: configuration written, but a host check failed (see the output,
+  # e.g. Secure Boot without the module certificate yet).
+  failed_when: hvpatch_setup.rc not in [0, 2]
+
+- name: Host checks
+  ansible.builtin.debug:
+    msg: "{{ hvpatch_setup.stdout_lines | select('search', 'FAIL|WARN') | list }}"
+  when: hvpatch_setup.rc == 2
+
+- name: Extra settings
+  ansible.builtin.lineinfile:
+    path: /etc/hvpatch/hvpatch.toml
+    regexp: '^{{ item.key }}\s*='
+    line: "{{ item.key }} = {{ item.value | to_json }}"
+  loop: "{{ hvpatch_settings | dict2items }}"
+
+- name: Module certificate for Secure Boot
+  ansible.builtin.copy:
+    src: "{{ hvpatch_module_cert }}"
+    dest: /etc/hvpatch/module-cert.der
+    owner: root
+    group: root
+    mode: "0644"
+  when: hvpatch_module_cert != ""
+
+- name: Timer
+  ansible.builtin.command:
+    argv: [hvpatch, auto, "{{ 'enable' if hvpatch_auto else 'disable' }}"]
+  changed_when: false

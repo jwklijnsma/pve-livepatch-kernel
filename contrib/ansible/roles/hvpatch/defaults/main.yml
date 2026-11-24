@@ -1,0 +1,15 @@
+---
+# Agent package: a URL (release page) or "apt" if the hvpatch APT repository
+# is configured on the node.
+hvpatch_package: "https://github.com/prepaid-host/hvpatch/releases/latest/download/hvpatch_amd64.deb"
+# Livepatch repository and its manifest key (URL or local path on the
+# controller; copied to /etc/hvpatch/trusted.d/).
+hvpatch_repository: ""
+hvpatch_manifest_key: ""
+hvpatch_ring: stable
+# Module certificate (DER) for Secure Boot nodes; empty to skip.
+hvpatch_module_cert: ""
+# Let the timer pick up new levels (hvpatch auto enable).
+hvpatch_auto: false
+# Settings for /etc/hvpatch/hvpatch.toml beyond setup (key: value).
+hvpatch_settings: {}
