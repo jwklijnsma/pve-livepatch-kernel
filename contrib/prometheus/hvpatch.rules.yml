@@ -1,0 +1,82 @@
+# Prometheus alerting rules for hvpatch (node_exporter textfile collector).
+#
+# The agent writes /var/lib/prometheus/node-exporter/hvpatch.prom when an
+# apply, boot, revert or status run finishes, not while a transition is
+# running. On canary nodes, refresh it every few minutes so the values are
+# current, e.g. with a systemd timer or cron job running:
+#
+#   hvpatch status >/dev/null
+#
+# Thresholds are examples; adjust them to your setup.
+groups:
+  - name: hvpatch
+    rules:
+      # The last operation failed. The agent has backed out: the node runs
+      # the previous level (or none). Look at `hvpatch status` ("last
+      # error") and the journal of hvpatch-auto.service.
+      - alert: HvpatchApplyFailed
+        expr: hvpatch_failed == 1
+        labels:
+          severity: warning
+        annotations:
+          summary: "hvpatch: last livepatch operation failed on {{ $labels.instance }}"
+          description: "The node backed out to the previous level. Run `hvpatch status` and check the journal."
+
+      # A transition normally finishes within seconds, and the agent reverses
+      # one that does not finish within transition_timeout (default 120 s).
+      # A transition still running in the written state means the reversal
+      # stalled as well: the agent has stopped and waits for an operator.
+      # Never write the force file; find the blocked task instead.
+      - alert: HvpatchTransitionStuck
+        expr: hvpatch_transition_in_progress == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "hvpatch: livepatch transition not finishing on {{ $labels.instance }}"
+          description: "Run `hvpatch status`; tasks that block the transition show a /proc/<pid>/patch_state different from the target state. Do not force."
+
+      # An operation was interrupted (killed agent, crash, reboot during
+      # apply): the stored state says fetched/verified/loading. The level
+      # is quarantined automatically on the next run.
+      - alert: HvpatchOperationInterrupted
+        expr: hvpatch_info{state=~"fetched|verified|loading"} == 1
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "hvpatch: an operation did not complete on {{ $labels.instance }}"
+
+      # A level failed or crashed a host once and is not loaded again
+      # automatically (only by an explicit `hvpatch apply`).
+      - alert: HvpatchLevelQuarantined
+        expr: hvpatch_quarantined > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "hvpatch: {{ $value }} quarantined level(s) on {{ $labels.instance }}"
+
+      # No fresh data: the timer or the status refresh does not run.
+      - alert: HvpatchMetricsStale
+        expr: time() - node_textfile_mtime_seconds{file=~".*hvpatch.prom"} > 7200
+        labels:
+          severity: warning
+        annotations:
+          summary: "hvpatch: metrics on {{ $labels.instance }} not updated for over 2 hours"
+
+      # Nobody publishes updates for this kernel in time: plan the reboot.
+      - alert: HvpatchManifestExpiresSoon
+        expr: hvpatch_manifest_expiry_timestamp_seconds - time() < 3 * 86400
+        labels:
+          severity: warning
+        annotations:
+          summary: "hvpatch: manifest on {{ $labels.instance }} expires within 3 days"
+
+      # Informational: known CVEs need a reboot into a newer kernel.
+      - alert: HvpatchRebootRequired
+        expr: hvpatch_reboot_required == 1
+        for: 1h
+        labels:
+          severity: info
+        annotations:
+          summary: "hvpatch: {{ $labels.instance }} needs a reboot for fixes that cannot be livepatched"

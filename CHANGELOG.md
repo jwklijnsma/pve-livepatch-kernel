@@ -17,6 +17,9 @@ All notable changes to this project are documented here. The format follows
   the signed build provenance as `hvpatch.intoto.jsonl` for offline
   verification. SECURITY.md states response times, the disclosure
   timeline and the supported versions.
+- `contrib/prometheus/hvpatch.rules.yml`: example alerting rules (failed
+  apply, stuck transition, interrupted operation, quarantine, stale
+  metrics, expiry), and a table of the signals in `contrib/README.md`.
 - README: terminal recording of `apply`, `revert` and `status` on a node
   with running VMs (`docs/assets/demo.gif`); `contrib/demo/demo.sh` now
   times `apply` (it called `time` as a command, which does not exist).
