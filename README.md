@@ -33,7 +33,9 @@ reboot:        REQUIRED
 > with MOK; and three backported CVE fixes (one in `vmlinux`, one in the
 > `overlay` module) whose reproducer is vulnerable before, fixed with the
 > livepatch, and vulnerable again after `revert`. Transitions take about
-> 1.6 s. No project builds of livepatch modules are published yet: build
+> 1.6 s. Since 0.3.0 also the default 7.0 series (experimental):
+> `7.0.14-30-pve` on a three-node test cluster under guest load, without a
+> lost guest packet ([docs/kernel-7.0.md](docs/kernel-7.0.md)). No project builds of livepatch modules are published yet: build
 > your own with [docs/self-hosting.md](docs/self-hosting.md). Feedback and
 > testers on non-production hosts are very welcome.
 
