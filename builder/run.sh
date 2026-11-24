@@ -53,7 +53,7 @@ if [ "$FREE_GB" -lt "$NEED_GB" ]; then
         (remove old trees in build/, or set MIN_FREE_GB to override)"
 fi
 
-"$ENGINE" build -q -t "$IMAGE" "$ROOT/builder" >/dev/null
+"$ENGINE" build -q -t "$IMAGE" -f "$ROOT/builder/Containerfile" "$ROOT/builder" >/dev/null
 IMAGE_ID=$("$ENGINE" image inspect "$IMAGE" --format '{{.Id}}')
 case "$IMAGE_ID" in sha256:*) ;; *) IMAGE_ID="sha256:$IMAGE_ID" ;; esac
 
