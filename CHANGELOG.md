@@ -51,11 +51,23 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- **7.0 kernel series (experimental):** `fetch-source.sh` prepares the
+  Ubuntu-based tree from `pve-kernel.git` as Proxmox does (pinned
+  pve-kernel commit, release checked against its Makefile) and adds the
+  six upstream objtool commits the tree lacks for `objtool klp`
+  (`builder/kernel-7.0/`, see `docs/kernel-7.0.md`). Checked: the patches
+  apply to Proxmox 7.0.14-30 and objtool builds with libxxhash; a 7.0
+  livepatch has not been through the QEMU stage and a host yet.
+- Catalog: `fixed_in_pve` takes one version per kernel series and is only
+  compared within a series; patches can be given per series (`"7.0"`) as
+  well as per package version.
+
 - **Signed revocation list** (`v1/revoked.json`, `builder/revoke.sh`,
   `hvpatch-tool revoke`): a revoked module is never loaded again, not even
   explicitly; nodes that run it go back to the highest cached level below
   it on their next timer run, or unload it. Sequence numbers only go up
-  (no replay); the list is cached for the boot reload.
+  (no replay); the list is cached for the boot reload. Once a list was
+  accepted, nothing new is loaded while the repository withholds it.
 
 - **Reboot recommendation:** `hvpatch status` names a newer installed
   kernel that waits for the next reboot (reboot reason, exit code 12,

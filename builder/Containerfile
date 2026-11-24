@@ -64,4 +64,5 @@ RUN cd /tmp && apt-get update && apt-get download "$KBUILD_PKG" \
 
 COPY hvpatch-tool /usr/local/bin/hvpatch-tool
 COPY *.sh *.py kernels.lock Containerfile /opt/hvpatch/builder/
+COPY kernel-7.0 /opt/hvpatch/builder/kernel-7.0
 WORKDIR /work

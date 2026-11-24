@@ -16,12 +16,14 @@ id: CVE-2026-XXXXX                 # must equal the directory name
 title: Use-after-free in ...
 psa: PSA-2026-000NN-1              # Proxmox security advisory; omit or "" if none
 upstream_commits: ["<sha>"]        # authoritative form of the fix
-fixed_in_pve: "7.3.6-1"            # first Proxmox package that contains it
+fixed_in_pve: ["7.3.6-1", "7.0.15-3"]  # first Proxmox package per series that contains it
+                                   # (a single string is fine; compared within a series only)
 severity: high                     # low | medium | high | critical
 class: livepatchable               # see below
 reason: ""                         # required unless livepatchable
-patches:
+patches:                           # most specific wins: package version, series, default
   default: 0001-fix.patch
+  "7.0": 0001-fix-7.0.patch          # backport for the Ubuntu-based 7.0 series
   "7.3.5-1": 0001-fix-7.3.5-1.patch
 functions: ["vmlinux:tcp_foo"]     # required for livepatchable: see below
 mitigation: ""                     # for mitigation-only

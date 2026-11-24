@@ -5,4 +5,5 @@
 # add (release, tag, commit). Check the commit against git.proxmox.com and
 # the Proxmox package changelog, then add it here in a reviewed commit.
 #
-# <kernel release>  <commit sha of the tag, before debian/patches>
+# 7.3 and later: <kernel release>  <proxmox-kernel.git commit of tag proxmox/<pkgver>>
+# 7.0 (experimental): <kernel release>  <pve-kernel.git commit that released it>

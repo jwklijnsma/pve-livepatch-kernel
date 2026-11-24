@@ -1,0 +1,72 @@
+From 6282e9f46b4fa3ac554852bb1aef17843fc47ee2 Mon Sep 17 00:00:00 2001
+From: Josh Poimboeuf <jpoimboe@kernel.org>
+Date: Wed, 18 Mar 2026 15:33:58 -0700
+Subject: objtool: Add is_cold_func() helper
+
+Add an is_cold_func() helper.  No functional changes intended.
+
+Acked-by: Song Liu <song@kernel.org>
+Signed-off-by: Josh Poimboeuf <jpoimboe@kernel.org>
+---
+ tools/objtool/check.c               | 6 +++---
+ tools/objtool/include/objtool/elf.h | 5 +++++
+ tools/objtool/klp-diff.c            | 3 ++-
+ 3 files changed, 10 insertions(+), 4 deletions(-)
+
+diff --git a/tools/objtool/check.c b/tools/objtool/check.c
+index 6c94eb32c09012..93a054adf2091f 100644
+--- a/tools/objtool/check.c
++++ b/tools/objtool/check.c
+@@ -2614,7 +2614,7 @@ static void mark_holes(struct objtool_file *file)
+ 		if (insn->jump_dest) {
+ 			struct symbol *dest_func = insn_func(insn->jump_dest);
+ 
+-			if (dest_func && dest_func->cold)
++			if (dest_func && is_cold_func(dest_func))
+ 				dest_func->ignore = true;
+ 		}
+ 	}
+@@ -4422,8 +4422,8 @@ static int create_prefix_symbol(struct objtool_file *file, struct symbol *func)
+ 	char name[SYM_NAME_LEN];
+ 	struct cfi_state *cfi;
+ 
+-	if (!is_func_sym(func) || is_prefix_func(func) ||
+-	    func->cold || func->static_call_tramp)
++	if (!is_func_sym(func) || is_prefix_func(func) || is_cold_func(func) ||
++	    func->static_call_tramp)
+ 		return 0;
+ 
+ 	if ((strlen(func->name) + sizeof("__pfx_") > SYM_NAME_LEN)) {
+diff --git a/tools/objtool/include/objtool/elf.h b/tools/objtool/include/objtool/elf.h
+index ccc72a692d9a68..e452784df7028e 100644
+--- a/tools/objtool/include/objtool/elf.h
++++ b/tools/objtool/include/objtool/elf.h
+@@ -308,6 +308,11 @@ static inline bool is_prefix_func(struct symbol *sym)
+ 	return sym->prefix;
+ }
+ 
++static inline bool is_cold_func(struct symbol *sym)
++{
++	return sym->cold;
++}
++
+ static inline bool is_reloc_sec(struct section *sec)
+ {
+ 	return sec->sh.sh_type == SHT_RELA || sec->sh.sh_type == SHT_REL;
+diff --git a/tools/objtool/klp-diff.c b/tools/objtool/klp-diff.c
+index 7e58ef36f805b1..8728dda1e08c3f 100644
+--- a/tools/objtool/klp-diff.c
++++ b/tools/objtool/klp-diff.c
+@@ -1709,7 +1709,8 @@ static int create_klp_sections(struct elfs *e)
+ 		unsigned long sympos;
+ 		void *func_data;
+ 
+-		if (!is_func_sym(sym) || sym->cold || !sym->clone || !sym->clone->changed)
++		if (!is_func_sym(sym) || is_cold_func(sym) ||
++		    !sym->clone || !sym->clone->changed)
+ 			continue;
+ 
+ 		/* allocate klp_func_ext */
+-- 
+cgit 1.3.1-korg
+

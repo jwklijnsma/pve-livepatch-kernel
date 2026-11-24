@@ -109,7 +109,9 @@ itself.
   never loaded, not even by an explicit `apply`; the boot reload skips it.
   If it is active, `apply` (the timer) puts the highest cached level below
   it back by atomic replace, or unloads it. An older list is ignored as a
-  replay; a list with a bad signature stops the run.
+  replay; a list with a bad signature stops the run. Once a list has been
+  accepted, a repository that no longer serves it (or an older one) gets
+  nothing new loaded: a mirror could be hiding a newer revocation.
 - **Taint:** after loading, new taint flags fail the post-checks, except
   those the livepatch module itself carries (`/sys/module/<m>/taint`:
   `O`, `E`, `K`). On a host without ZFS, the module's own `O` is the first

@@ -1,0 +1,301 @@
+From 3ee67629b2b7fbe270f6c21d9a95219bbd214630 Mon Sep 17 00:00:00 2001
+From: Josh Poimboeuf <jpoimboe@kernel.org>
+Date: Sat, 4 Apr 2026 11:30:37 -0700
+Subject: objtool: Add insn_sym() helper
+
+Alternative replacement instructions awkwardly have insn->sym set to the
+function they get patched to rather than the symbol (or rather lack
+thereof) they belong to in the file.
+
+This makes it difficult to know where a given instruction actually
+lives.
+
+Add a new insn_sym() helper which preserves the existing semantic of
+insn->sym.  Rename insn->sym to insn->_sym, which contains the actual
+ELF binary symbol (or NULL, for alternative replacements) an instruction
+lives in.
+
+The private insn->_sym value will be needed for a subsequent patch.
+
+Acked-by: Song Liu <song@kernel.org>
+Signed-off-by: Josh Poimboeuf <jpoimboe@kernel.org>
+---
+ tools/objtool/check.c                 | 31 ++++++++++++++-----------------
+ tools/objtool/disas.c                 | 22 ++++++++++------------
+ tools/objtool/include/objtool/check.h | 20 ++++++++++++++++++--
+ tools/objtool/include/objtool/warn.h  |  6 +++---
+ tools/objtool/trace.c                 |  8 ++++----
+ 5 files changed, 49 insertions(+), 38 deletions(-)
+
+diff --git a/tools/objtool/check.c b/tools/objtool/check.c
+index ae047be919c54e..4242582e941a8e 100644
+--- a/tools/objtool/check.c
++++ b/tools/objtool/check.c
+@@ -495,7 +495,7 @@ static int decode_instructions(struct objtool_file *file)
+ 			}
+ 
+ 			sym_for_each_insn(file, func, insn) {
+-				insn->sym = func;
++				insn->_sym = func;
+ 				if (is_func_sym(func) &&
+ 				    insn->type == INSN_ENDBR &&
+ 				    list_empty(&insn->call_node)) {
+@@ -859,15 +859,14 @@ static int create_ibt_endbr_seal_sections(struct objtool_file *file)
+ 	list_for_each_entry(insn, &file->endbr_list, call_node) {
+ 
+ 		int *site = (int *)sec->data->d_buf + idx;
+-		struct symbol *sym = insn->sym;
++		struct symbol *func = insn_func(insn);
+ 		*site = 0;
+ 
+-		if (opts.module && sym && is_func_sym(sym) &&
+-		    insn->offset == sym->offset &&
+-		    (!strcmp(sym->name, "init_module") ||
+-		     !strcmp(sym->name, "cleanup_module"))) {
++		if (opts.module && func && insn->offset == func->offset &&
++		    (!strcmp(func->name, "init_module") ||
++		     !strcmp(func->name, "cleanup_module"))) {
+ 			ERROR("%s(): Magic init_module() function name is deprecated, use module_init(fn) instead",
+-			      sym->name);
++			      func->name);
+ 			return -1;
+ 		}
+ 
+@@ -1581,7 +1580,7 @@ static int add_jump_destinations(struct objtool_file *file)
+ 		}
+ 
+ 		if (!dest_sym || is_sec_sym(dest_sym)) {
+-			dest_sym = dest_insn->sym;
++			dest_sym = insn_sym(dest_insn);
+ 			if (!dest_sym)
+ 				goto set_jump_dest;
+ 		}
+@@ -1597,7 +1596,7 @@ static int add_jump_destinations(struct objtool_file *file)
+ 			continue;
+ 		}
+ 
+-		if (!insn->sym || insn->sym->pfunc == dest_sym->pfunc)
++		if (!insn_sym(insn) || insn_sym(insn)->pfunc == dest_sym->pfunc)
+ 			goto set_jump_dest;
+ 
+ 		/*
+@@ -1770,7 +1769,6 @@ static int handle_group_alt(struct objtool_file *file,
+ 		nop->offset = special_alt->new_off + special_alt->new_len;
+ 		nop->len = special_alt->orig_len - special_alt->new_len;
+ 		nop->type = INSN_NOP;
+-		nop->sym = orig_insn->sym;
+ 		nop->alt_group = new_alt_group;
+ 		nop->fake = 1;
+ 	}
+@@ -1789,7 +1787,6 @@ static int handle_group_alt(struct objtool_file *file,
+ 
+ 		last_new_insn = insn;
+ 
+-		insn->sym = orig_insn->sym;
+ 		insn->alt_group = new_alt_group;
+ 
+ 		/*
+@@ -2432,12 +2429,12 @@ static int __annotate_late(struct objtool_file *file, int type, struct instructi
+ 		break;
+ 
+ 	case ANNOTYPE_NOCFI:
+-		sym = insn->sym;
++		sym = insn_sym(insn);
+ 		if (!sym) {
+ 			ERROR_INSN(insn, "dodgy NOCFI annotation");
+ 			return -1;
+ 		}
+-		insn->sym->nocfi = 1;
++		sym->nocfi = 1;
+ 		break;
+ 
+ 	default:
+@@ -2538,7 +2535,7 @@ static void mark_holes(struct objtool_file *file)
+ 	 * favour of a regular symbol, but leaves the code in place.
+ 	 */
+ 	for_each_insn(file, insn) {
+-		if (insn->sym || !find_symbol_hole_containing(insn->sec, insn->offset)) {
++		if (insn_sym(insn) || !find_symbol_hole_containing(insn->sec, insn->offset)) {
+ 			in_hole = false;
+ 			continue;
+ 		}
+@@ -2982,7 +2979,7 @@ static int update_cfi_state(struct instruction *insn,
+ 			}
+ 
+ 			if (op->dest.reg == CFI_BP && op->src.reg == CFI_SP &&
+-			    insn->sym->frame_pointer) {
++			    insn_sym(insn)->frame_pointer) {
+ 				/* addi.d fp,sp,imm on LoongArch */
+ 				if (cfa->base == CFI_SP && cfa->offset == op->src.offset) {
+ 					cfa->base = CFI_BP;
+@@ -2994,7 +2991,7 @@ static int update_cfi_state(struct instruction *insn,
+ 			if (op->dest.reg == CFI_SP && op->src.reg == CFI_BP) {
+ 				/* addi.d sp,fp,imm on LoongArch */
+ 				if (cfa->base == CFI_BP && cfa->offset == 0) {
+-					if (insn->sym->frame_pointer) {
++					if (insn_sym(insn)->frame_pointer) {
+ 						cfa->base = CFI_SP;
+ 						cfa->offset = -op->src.offset;
+ 					}
+@@ -4171,7 +4168,7 @@ static int validate_retpoline(struct objtool_file *file)
+ 	 * broken.
+ 	 */
+ 	list_for_each_entry(insn, &file->retpoline_call_list, call_node) {
+-		struct symbol *sym = insn->sym;
++		struct symbol *sym = insn_sym(insn);
+ 
+ 		if (sym && (is_notype_sym(sym) ||
+ 			    is_func_sym(sym)) && !sym->nocfi) {
+diff --git a/tools/objtool/disas.c b/tools/objtool/disas.c
+index 59090234af1904..e6a54a83605c90 100644
+--- a/tools/objtool/disas.c
++++ b/tools/objtool/disas.c
+@@ -210,7 +210,7 @@ static bool disas_print_addr_alt(bfd_vma addr, struct disassemble_info *dinfo)
+ 	offset = addr - alt_group->first_insn->offset;
+ 
+ 	addr = orig_first_insn->offset + offset;
+-	sym = orig_first_insn->sym;
++	sym = insn_sym(orig_first_insn);
+ 
+ 	disas_print_addr_sym(orig_first_insn->sec, sym, addr, dinfo);
+ 
+@@ -222,15 +222,13 @@ static void disas_print_addr_noreloc(bfd_vma addr,
+ {
+ 	struct disas_context *dctx = dinfo->application_data;
+ 	struct instruction *insn = dctx->insn;
+-	struct symbol *sym = NULL;
++	struct symbol *sym = insn_sym(insn);
+ 
+ 	if (disas_print_addr_alt(addr, dinfo))
+ 		return;
+ 
+-	if (insn->sym && addr >= insn->sym->offset &&
+-	    addr < insn->sym->offset + insn->sym->len) {
+-		sym = insn->sym;
+-	}
++	if (sym && (addr < sym->offset || addr >= sym->offset + sym->len))
++		sym = NULL;
+ 
+ 	disas_print_addr_sym(insn->sec, sym, addr, dinfo);
+ }
+@@ -291,9 +289,9 @@ static void disas_print_address(bfd_vma addr, struct disassemble_info *dinfo)
+ 	 * up. So check it first.
+ 	 */
+ 	jump_dest = insn->jump_dest;
+-	if (jump_dest && jump_dest->sym && jump_dest->offset == addr) {
++	if (jump_dest && insn_sym(jump_dest) && jump_dest->offset == addr) {
+ 		if (!disas_print_addr_alt(addr, dinfo))
+-			disas_print_addr_sym(jump_dest->sec, jump_dest->sym,
++			disas_print_addr_sym(jump_dest->sec, insn_sym(jump_dest),
+ 					     addr, dinfo);
+ 		return;
+ 	}
+@@ -768,8 +766,8 @@ static int disas_alt_jump(struct disas_alt *dalt)
+ 		if (orig_insn->len == 5)
+ 			suffix[0] = 'q';
+ 		str = strfmt("jmp%-3s %lx <%s+0x%lx>", suffix,
+-			     dest_insn->offset, dest_insn->sym->name,
+-			     dest_insn->offset - dest_insn->sym->offset);
++			     dest_insn->offset, insn_sym(dest_insn)->name,
++			     dest_insn->offset - insn_sym(dest_insn)->offset);
+ 		nops = 0;
+ 	} else {
+ 		str = strfmt("nop%d", orig_insn->len);
+@@ -794,8 +792,8 @@ static int disas_alt_extable(struct disas_alt *dalt)
+ 
+ 	alt_insn = dalt->alt->insn;
+ 	str = strfmt("resume at 0x%lx <%s+0x%lx>",
+-		     alt_insn->offset, alt_insn->sym->name,
+-		     alt_insn->offset - alt_insn->sym->offset);
++		     alt_insn->offset, insn_sym(alt_insn)->name,
++		     alt_insn->offset - insn_sym(alt_insn)->offset);
+ 	if (!str)
+ 		return -1;
+ 
+diff --git a/tools/objtool/include/objtool/check.h b/tools/objtool/include/objtool/check.h
+index eea64728d39ba7..fe08205d8eb16d 100644
+--- a/tools/objtool/include/objtool/check.h
++++ b/tools/objtool/include/objtool/check.h
+@@ -94,14 +94,30 @@ struct instruction {
+ 		};
+ 	};
+ 	struct alternative *alts;
+-	struct symbol *sym;
++	struct symbol *_sym;
+ 	struct stack_op *stack_ops;
+ 	struct cfi_state *cfi;
+ };
+ 
++/*
++ * Return the symbol associated with an instruction.  For alternative
++ * replacements, return the symbol of the original code being replaced rather
++ * than NULL.  insn->_sym reflects the actual location in the ELF file.
++ */
++static inline struct symbol *insn_sym(struct instruction *insn)
++{
++	struct symbol *sym = insn->_sym;
++
++	if ((!sym || !is_func_sym(sym)) &&
++	    insn->alt_group && insn->alt_group->orig_group)
++		sym = insn->alt_group->orig_group->first_insn->_sym;
++
++	return sym;
++}
++
+ static inline struct symbol *insn_func(struct instruction *insn)
+ {
+-	struct symbol *sym = insn->sym;
++	struct symbol *sym = insn_sym(insn);
+ 
+ 	if (sym && sym->type != STT_FUNC)
+ 		sym = NULL;
+diff --git a/tools/objtool/include/objtool/warn.h b/tools/objtool/include/objtool/warn.h
+index a9936d60980c1f..870e147f3a5655 100644
+--- a/tools/objtool/include/objtool/warn.h
++++ b/tools/objtool/include/objtool/warn.h
+@@ -77,13 +77,13 @@ static inline char *offstr(struct section *sec, unsigned long offset)
+ #define WARN_INSN(insn, format, ...)					\
+ ({									\
+ 	struct instruction *_insn = (insn);				\
+-	if (!_insn->sym || !_insn->sym->warned)	{			\
++	if (!insn_sym(_insn) || !insn_sym(_insn)->warned)	{	\
+ 		WARN_FUNC(_insn->sec, _insn->offset, format,		\
+ 			  ##__VA_ARGS__);				\
+ 		BT_INSN(_insn, "");					\
+ 	}								\
+-	if (_insn->sym)							\
+-		_insn->sym->warned = 1;					\
++	if (insn_sym(_insn))						\
++		insn_sym(_insn)->warned = 1;				\
+ })
+ 
+ #define BT_INSN(insn, format, ...)				\
+diff --git a/tools/objtool/trace.c b/tools/objtool/trace.c
+index 5dec44dab781ce..61c6aa302bc34d 100644
+--- a/tools/objtool/trace.c
++++ b/tools/objtool/trace.c
+@@ -169,8 +169,8 @@ void trace_alt_begin(struct instruction *orig_insn, struct alternative *alt,
+ 		 */
+ 		TRACE_ALT_INFO_NOADDR(orig_insn, "/ ", "%s for instruction at 0x%lx <%s+0x%lx>",
+ 				      alt_name,
+-				      orig_insn->offset, orig_insn->sym->name,
+-				      orig_insn->offset - orig_insn->sym->offset);
++				      orig_insn->offset, insn_sym(orig_insn)->name,
++				      orig_insn->offset - insn_sym(orig_insn)->offset);
+ 	} else {
+ 		TRACE_ALT_INFO_NOADDR(orig_insn, "/ ", "%s", alt_name);
+ 	}
+@@ -185,8 +185,8 @@ void trace_alt_begin(struct instruction *orig_insn, struct alternative *alt,
+ 		if (orig_insn->type == INSN_NOP) {
+ 			suffix[0] = (orig_insn->len == 5) ? 'q' : '\0';
+ 			TRACE_ADDR(orig_insn, "jmp%-3s %lx <%s+0x%lx>", suffix,
+-				   alt_insn->offset, alt_insn->sym->name,
+-				   alt_insn->offset - alt_insn->sym->offset);
++				   alt_insn->offset, insn_sym(alt_insn)->name,
++				   alt_insn->offset - insn_sym(alt_insn)->offset);
+ 		} else {
+ 			TRACE_ADDR(orig_insn, "nop%d", orig_insn->len);
+ 			trace_depth--;
+-- 
+cgit 1.3.1-korg
+

@@ -186,8 +186,10 @@ reboot, and `status` says so:
 - out-of-tree modules such as **ZFS**;
 - user space such as QEMU or libc (restart or migrate the VM).
 
-Supported: Proxmox VE 9 with the 7.3 kernel series, x86-64. PVE 8 and older
-are out of scope.
+Supported: Proxmox VE 9 with the opt-in 7.3 kernel series, x86-64. The
+default 7.0 series is **experimental**: the build path exists, objtool needs
+backports there ([docs/kernel-7.0.md](docs/kernel-7.0.md)), and no 7.0
+livepatch has been tested on a host yet. PVE 8 and older are out of scope.
 
 ## Status and roadmap
 

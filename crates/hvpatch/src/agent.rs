@@ -223,8 +223,17 @@ impl<K: KernelOps> Agent<K> {
         }
         self.reconcile(&mut state, &release)?;
         let repo = self.repo.as_ref().ok_or_else(|| anyhow!("no repository configured"))?;
-        let revoked = self.refresh_revocations(repo.as_ref(), &mut state)?;
+        let (revoked, fresh) = self.refresh_revocations(repo.as_ref(), &mut state)?;
         self.withdraw_revoked(&mut state, &release, &revoked)?;
+        // Once a list was published, a missing one may be a mirror hiding
+        // a newer revocation: keep what runs, load nothing new.
+        if !fresh && state.revocation_sequence > 0 {
+            return Err(ApplyError::Rejected(format!(
+                "the revocation list (sequence {} accepted before) is not available from the repository; \
+                 not loading anything new until it is",
+                state.revocation_sequence
+            )));
+        }
         let active = self.preflight(opts.replace_foreign)?;
 
         let base = format!("v1/{release}/{}", self.cfg.ring);
@@ -375,11 +384,12 @@ impl<K: KernelOps> Agent<K> {
         Ok(warnings)
     }
 
-    /// Fetch, verify and cache the revocation list. Without one in the
-    /// repository (or when the repository is unreachable) the cached list
+    /// Fetch, verify and cache the revocation list. Returns the list to
+    /// apply and whether it came from the repository just now. Without one
+    /// in the repository (or when it is unreachable) the cached list
     /// applies; a list older than one accepted before is a replay and is
     /// ignored; a list with a bad signature stops the run.
-    fn refresh_revocations(&self, repo: &dyn Repo, state: &mut State) -> Result<RevocationList, ApplyError> {
+    fn refresh_revocations(&self, repo: &dyn Repo, state: &mut State) -> Result<(RevocationList, bool), ApplyError> {
         let cached = self.cached_revocations();
         let mut fetched = None;
         // List and signature are two files: a reader can catch the publisher
@@ -387,10 +397,10 @@ impl<K: KernelOps> Agent<K> {
         for attempt in 0..2 {
             let raw = match repo.get(REVOCATION_LIST, revocation::MAX_SIZE) {
                 Ok(b) => b,
-                Err(RepoError::NotFound(_)) => return Ok(cached),
+                Err(RepoError::NotFound(_)) => return Ok((cached, false)),
                 Err(RepoError::Other(e)) => {
                     self.log(format!("revocation list not available ({e:#}); using the cached one"));
-                    return Ok(cached);
+                    return Ok((cached, false));
                 }
             };
             let sig = repo
@@ -414,7 +424,7 @@ impl<K: KernelOps> Agent<K> {
                 "ignoring revocation list {}: older than {} accepted before",
                 list.sequence, state.revocation_sequence
             ));
-            return Ok(cached);
+            return Ok((cached, false));
         }
         if list.sequence > state.revocation_sequence || cached.sequence != list.sequence {
             let f = self.cfg.revocation_file();
@@ -423,7 +433,7 @@ impl<K: KernelOps> Agent<K> {
             state.revocation_sequence = list.sequence;
             state.save(&self.cfg.state_file())?;
         }
-        Ok(list)
+        Ok((list, true))
     }
 
     fn verify_revocations(&self, raw: &[u8], sig: &[u8]) -> anyhow::Result<RevocationList> {

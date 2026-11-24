@@ -1005,14 +1005,21 @@ fn revocation_list_replay_and_bad_signature() {
     a.apply(&explicit()).unwrap();
     assert!(a.kernel.active().is_empty(), "revoked level 1 must not load");
     assert_eq!(env.state().revocation_sequence, 5);
-    // An older, empty list (replay) does not un-revoke it.
+    // An older, empty list (replay) does not un-revoke it, and nothing new
+    // is loaded while the current list is withheld.
     env.publish_revocations(&revocations(&[], 4));
-    a.apply(&explicit()).unwrap();
+    assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(e)) if e.contains("not available")));
     assert!(a.kernel.active().is_empty());
     assert!(a.log_lines().iter().any(|l| l.contains("older than 5")));
+    // Same when the list disappears from the repository.
+    std::fs::remove_file(env.repo.join("v1/revoked.json")).unwrap();
+    env.publish_level(2);
+    assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(e)) if e.contains("not available")));
+    assert!(a.kernel.active().is_empty());
     // A tampered list is rejected.
+    env.publish_revocations(&revocations(&[&m1], 6));
     let f = env.repo.join("v1/revoked.json");
-    let tampered = std::fs::read_to_string(&f).unwrap().replace("\"sequence\": 4", "\"sequence\": 9");
+    let tampered = std::fs::read_to_string(&f).unwrap().replace("\"sequence\": 6", "\"sequence\": 9");
     std::fs::write(&f, tampered).unwrap();
     assert!(matches!(a.apply(&explicit()), Err(ApplyError::Rejected(e)) if e.contains("revocation list")));
 }

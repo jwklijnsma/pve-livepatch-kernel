@@ -35,14 +35,17 @@ pub struct Entry {
     #[serde(default)]
     pub psa: Option<String>,
     pub upstream_commits: Vec<String>,
-    /// First Proxmox kernel package version that contains the fix, e.g. "7.3.6-1".
-    #[serde(default)]
-    pub fixed_in_pve: Option<String>,
+    /// First Proxmox kernel package version that contains the fix, per
+    /// kernel series: "7.3.6-1", or a list like ["7.3.6-1", "7.0.15-3"].
+    /// Versions are only compared within their series.
+    #[serde(default, deserialize_with = "one_or_many")]
+    pub fixed_in_pve: Vec<String>,
     pub severity: String,
     pub class: Class,
     #[serde(default)]
     pub reason: String,
-    /// "default" plus optional per-package-version backports.
+    /// "default" plus optional backports per series ("7.0") or package
+    /// version ("7.0.14-30"); the most specific one wins.
     #[serde(default)]
     pub patches: BTreeMap<String, String>,
     /// Reviewed list of functions this fix patches (`object:function`).
@@ -79,7 +82,7 @@ pub fn load(catalog: &Path) -> Result<Vec<Loaded>> {
         let mut entry: Entry =
             serde_norway::from_str(&text).with_context(|| format!("parsing {}/meta.yaml", dir.display()))?;
         // Optional fields: an empty value means the same as omitting the key.
-        for f in [&mut entry.psa, &mut entry.fixed_in_pve, &mut entry.mitigation] {
+        for f in [&mut entry.psa, &mut entry.mitigation] {
             if f.as_deref().is_some_and(|v| v.trim().is_empty()) {
                 *f = None;
             }
@@ -208,6 +211,38 @@ fn applies(tree: &Path, patch: &Path) -> Result<Applies> {
 /// With `tree`, every candidate patch is test-applied: a patch that applies
 /// in reverse is already contained; a patch that applies neither way is a
 /// hard error (it needs a backport), never a silent drop.
+/// `fixed_in_pve` as a string, a list, null or "".
+fn one_or_many<'de, D: serde::Deserializer<'de>>(d: D) -> std::result::Result<Vec<String>, D::Error> {
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum OneOrMany {
+        One(String),
+        Many(Vec<String>),
+    }
+    let v: Option<OneOrMany> = Option::deserialize(d)?;
+    Ok(match v {
+        None => vec![],
+        Some(OneOrMany::One(s)) => vec![s],
+        Some(OneOrMany::Many(v)) => v,
+    }
+    .into_iter()
+    .map(|s| s.trim().to_owned())
+    .filter(|s| !s.is_empty())
+    .collect())
+}
+
+fn series_of(pkg: &str) -> String {
+    pkg.split('.').take(2).collect::<Vec<_>>().join(".")
+}
+
+impl Entry {
+    /// The version in this package's series that contains the fix.
+    pub fn fixed_in_series(&self, pkg: &str) -> Option<&str> {
+        let s = series_of(pkg);
+        self.fixed_in_pve.iter().find(|f| series_of(f) == s).map(String::as_str)
+    }
+}
+
 pub fn resolve(
     entries: &[Loaded],
     kernel_release: &str,
@@ -218,13 +253,16 @@ pub fn resolve(
     let mut r = Resolved { kernel: kernel_release.to_owned(), ..Default::default() };
     for l in entries {
         let e = &l.entry;
-        if let Some(fixed) = &e.fixed_in_pve
+        let fixed_here = e.fixed_in_series(pkg);
+        if let Some(fixed) = fixed_here
             && cmp_version(pkg, fixed).is_ge()
         {
             r.skipped.push((e.id.clone(), format!("kernel {pkg} already contains the fix (fixed in {fixed})")));
             continue;
         }
-        let fixed_in = e.fixed_in_pve.as_ref().map(|v| format!("{v}-pve"));
+        // For "reboot into": the fixed kernel of this series, else any
+        // series that has it (e.g. the opt-in kernel).
+        let fixed_in = fixed_here.or_else(|| e.fixed_in_pve.last().map(String::as_str)).map(|v| format!("{v}-pve"));
         let not_covered = |reason: String| NotCovered {
             id: e.id.clone(),
             reason,
@@ -246,7 +284,15 @@ pub fn resolve(
                 continue;
             }
         }
-        let file = e.patches.get(pkg).or_else(|| e.patches.get("default")).context(format!("{}: no patch", e.id))?;
+        // Most specific first: package version (7.0.14-30), series (7.0),
+        // then the default.
+        let series = series_of(pkg);
+        let file = e
+            .patches
+            .get(pkg)
+            .or_else(|| e.patches.get(&series))
+            .or_else(|| e.patches.get("default"))
+            .context(format!("{}: no patch", e.id))?;
         let patch = l.dir.join(file);
         if let Some(tree) = tree {
             match applies(tree, &patch)? {
@@ -255,12 +301,11 @@ pub fn resolve(
                     // Only plausible if the catalog agrees that this kernel
                     // already has the fix; otherwise a dirty tree or a
                     // coincidental reverse match would silently drop it.
-                    if e.fixed_in_pve.as_deref().is_some_and(|f| cmp_version(pkg, f).is_lt()) {
+                    if let Some(f) = fixed_here.filter(|f| cmp_version(pkg, f).is_lt()) {
                         bail!(
-                            "{}: the patch applies in reverse to {kernel_release}, but fixed_in_pve says {} \
+                            "{}: the patch applies in reverse to {kernel_release}, but fixed_in_pve says {f} \
                              (later). Check the tree is clean and the entry is right",
-                            e.id,
-                            e.fixed_in_pve.as_deref().unwrap_or_default()
+                            e.id
                         );
                     }
                     r.skipped.push((e.id.clone(), "patch applies in reverse: already contained in this kernel".into()));
@@ -478,6 +523,45 @@ reviewed_by: ["alice", "bob"]
         assert!(r.fixes.is_empty() && r.not_covered.is_empty());
     }
 
+    #[test]
+    fn fixed_in_and_patches_per_series() {
+        let t = tempfile::tempdir().unwrap();
+        write(
+            t.path(),
+            "CVE-2026-0011",
+            r#"
+id: CVE-2026-0011
+title: t
+upstream_commits: ["0123456789abcdef"]
+fixed_in_pve: ["7.3.6-1", "7.0.15-3"]
+severity: high
+class: livepatchable
+patches:
+  default: 0001-fix.patch
+  "7.0": 0001-fix.patch.70
+functions: ["vmlinux:f"]
+"#,
+        );
+        std::fs::write(t.path().join("CVE-2026-0011/0001-fix.patch.70"), "--- a/x\n+++ b/x\n").unwrap();
+        let e = load(t.path()).unwrap();
+        // 7.0.15-3 fixes it for 7.0 only; a 7.3 kernel before 7.3.6 still needs it.
+        let r = resolve(&e, "7.3.4-1-pve", None, false).unwrap();
+        assert_eq!(r.fixes.len(), 1);
+        assert!(r.patches[0].ends_with("0001-fix.patch"), "{:?}", r.patches);
+        let r = resolve(&e, "7.0.14-30-pve", None, false).unwrap();
+        assert_eq!(r.fixes.len(), 1);
+        assert!(r.patches[0].ends_with("0001-fix.patch.70"), "series patch wins: {:?}", r.patches);
+        assert!(resolve(&e, "7.0.15-3-pve", None, false).unwrap().fixes.is_empty());
+        assert!(resolve(&e, "7.3.6-1-pve", None, false).unwrap().fixes.is_empty());
+        // A single string still works.
+        let one: Entry = serde_norway::from_str(
+            "id: x\ntitle: t\nupstream_commits: []\nfixed_in_pve: \"7.3.6-1\"\nseverity: low\nclass: needs-manual\n",
+        )
+        .unwrap();
+        assert_eq!(one.fixed_in_pve, vec!["7.3.6-1"]);
+        assert_eq!(one.fixed_in_series("7.0.14-30"), None);
+    }
+
     /// A git tree with f.c and g.c ("a b c") committed.
     fn git_tree(tree: &Path) {
         std::fs::create_dir_all(tree).unwrap();
@@ -560,7 +644,7 @@ reviewed_by: ["alice", "bob"]
         assert!(r.fixes.is_empty() && r.skipped.len() == 1);
         // fixed_in_pve later than this kernel contradicts the tree.
         let mut e = first[0].clone();
-        e.entry.fixed_in_pve = Some("7.3.9-1".into());
+        e.entry.fixed_in_pve = vec!["7.3.9-1".into()];
         let err = resolve(&[e], "7.3.5-1-pve", Some(&tree), false).unwrap_err().to_string();
         assert!(err.contains("applies in reverse") && err.contains("7.3.9-1"), "{err}");
     }

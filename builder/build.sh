@@ -31,6 +31,8 @@ export LOCALVERSION=
 # random per run, which makes the reused original build differ from the
 # patched one ("changed data: linux_banner"). Fix both.
 export KBUILD_BUILD_USER=hvpatch KBUILD_BUILD_HOST=hvpatch-builder
+# Upstream klp-build defines it; the 7.0 (Ubuntu) one uses it undefined.
+export OBJTOOL="$TREE/tools/objtool/objtool"
 
 # The shipped artifacts come from fetch-shipped.sh in its own container;
 # run.sh mounts them read-only here.
@@ -120,8 +122,8 @@ hvpatch-tool gate-a --module "$OUT/$NAME.ko" --kernel "$KVER" --expected-name "$
 # kernel commit, shared by all levels), the config, the toolchain versions
 # and the scripts used to build it.
 log "source bundle"
-BASE=$(git -C "$TREE" rev-parse 'HEAD~1')
 PATCHED=$(git -C "$TREE" rev-parse HEAD)
+ORIGIN=$(cat "$TREE/.hvpatch-source" 2>/dev/null || echo "unknown")
 mkdir -p "$WORK/cache"
 KSRC="$WORK/cache/linux-$KVER-$PATCHED.tar.xz"
 if [ ! -s "$KSRC" ]; then
@@ -140,13 +142,19 @@ cp "$OUT/resolved.json" "$OUT/config-check.txt" "$OUT/functions.txt" "$SRC/"
 cp "$TREE/.config" "$SRC/config"
 cp "$HERE"/*.sh "$HERE"/*.py "$HERE/kernels.lock" "$SRC/builder/"
 [ -f "$HERE/Containerfile" ] && cp "$HERE/Containerfile" "$SRC/builder/"
+cp -r "$HERE/kernel-7.0" "$SRC/builder/"
 cat > "$SRC/SOURCE.md" <<EOF
 # Corresponding source of $NAME.ko
 
-- Kernel: $KVER, Proxmox source ${PROXMOX_KERNEL_GIT:-https://git.proxmox.com/git/proxmox-kernel.git}
-  tag proxmox/$(pkgver "$KVER"), commit $BASE, with debian/patches applied
-  (commit $PATCHED in the build tree). The complete tree is
-  $(basename "$KSRC") next to this bundle.
+- Kernel: $KVER. Proxmox source (repository, commit):
+
+\`\`\`
+$ORIGIN
+\`\`\`
+
+  prepared as Proxmox does (patch queue applied; for 7.0 also the objtool
+  backports from builder/kernel-7.0). Build tree commit: $PATCHED. The
+  complete tree is $(basename "$KSRC") next to this bundle.
 - Livepatch patches, in the order applied: patches/
 - Kernel config: config. Toolchain versions: config-check.txt.
 - klp-build and objtool: scripts/livepatch and tools/objtool of that tree.
