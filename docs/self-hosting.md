@@ -135,6 +135,16 @@ versions stay for audits. Serve `/srv/klp` over HTTPS with a server that
 follows symlinks, or sync a dereferenced copy (`rsync -L`) to object
 storage.
 
+### Status page
+
+```bash
+hvpatch-tool status-page --repo /srv/klp --title "Example livepatches" --out /srv/klp/index.html
+```
+
+writes a static overview from the signed manifests: what each ring serves
+per kernel, the CVEs fixed live, what needs a reboot, revoked levels. Run
+it after every publish, promote or revoke.
+
 ### What goes into the repository
 
 ```

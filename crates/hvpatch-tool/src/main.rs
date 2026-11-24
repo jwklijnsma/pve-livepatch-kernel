@@ -4,6 +4,7 @@ mod catalog;
 mod cvescan;
 mod gate;
 mod kconfig;
+mod statuspage;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
@@ -208,6 +209,17 @@ enum Cmd {
         drafts: Option<PathBuf>,
         #[arg(long)]
         json: bool,
+    },
+    /// Write a static HTML overview of a repository (rings per kernel,
+    /// CVEs fixed live, what needs a reboot, revoked levels).
+    StatusPage {
+        /// Repository root (the directory that holds v1/).
+        #[arg(long)]
+        repo: PathBuf,
+        #[arg(long, default_value = "Kernel livepatches")]
+        title: String,
+        #[arg(long)]
+        out: PathBuf,
     },
     /// Add a module to the revocation list (created if missing; the
     /// sequence goes up). Sign the result with `sign` afterwards.
@@ -529,6 +541,12 @@ fn run(cli: Cli) -> Result<bool> {
                     count("P2")
                 );
             }
+            Ok(true)
+        }
+        Cmd::StatusPage { repo, title, out } => {
+            let r = statuspage::load(&repo)?;
+            write(&out, statuspage::render(&r, &title, Utc::now()).as_bytes())?;
+            println!("{} kernel(s) -> {}", r.kernels.len(), out.display());
             Ok(true)
         }
         Cmd::Revoke { list, module, kernel, level, reason } => {

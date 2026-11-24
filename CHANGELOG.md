@@ -54,6 +54,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `hvpatch-tool status-page`: static HTML overview of a repository (rings
+  per kernel, CVEs fixed live, reboot-only CVEs, revoked levels).
+
 - `docs/threat-model.md` and `docs/key-management.md` (two keys, offline
   manifest key, rotation without a flag day, what to do after a leak).
 
