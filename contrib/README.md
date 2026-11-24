@@ -6,6 +6,7 @@
 | `hooks/90-notify` | Hook that posts every load to a webhook (ntfy, Matrix, Slack, …) |
 | `ansible/roles/hvpatch` | Installs and configures the agent |
 | `ansible/rollout.yml` | One node at a time, canary group first, stops at the first unhealthy node |
+| `demo/demo.sh` | Terminal demo for recordings (test nodes only) |
 
 Prometheus: the agent already writes `hvpatch.prom` for the node_exporter
 textfile collector (`textfile_dir`), see `docs/architecture.md`.
