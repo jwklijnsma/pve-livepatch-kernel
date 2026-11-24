@@ -33,14 +33,24 @@ jobs:
       - run: cargo run --locked -q -p hvpatch-tool -- lint --catalog catalog
       - name: fetch the upstream commits named in the catalog
         run: |
-          # One diff per commit: in a shallow clone, fetching several
-          # commits can turn one into a root commit and break git show.
+          # From git.kernel.org only, which serves nothing but commits
+          # reachable in its own repositories (GitHub's /commit/<sha> also
+          # resolves commits from any fork). One fresh shallow repository per
+          # commit, so each one keeps its parent.
           mkdir -p upstream
           for c in $(sed -n 's/^upstream_commits:.*\[\(.*\)\].*/\1/p' catalog/*/meta.yaml | tr -d '" ' | tr ',' '\n' | sort -u); do
-            for r in torvalds/linux gregkh/linux; do
-              curl -fsSL --retry 3 "https://github.com/$r/commit/$c.diff" -o "upstream/$c.diff" && continue 2
+            if ! [[ "$c" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "::error::upstream commit $c: the CI comparison needs the full 40-character sha"
+              exit 1
+            fi
+            for r in torvalds/linux stable/linux; do
+              rm -rf one && git init -q one
+              if git -C one fetch -q --depth 2 "https://git.kernel.org/pub/scm/linux/kernel/git/$r.git" "$c" 2>/dev/null; then
+                git -C one show --format= "$c" > "upstream/$c.diff"
+                continue 2
+              fi
             done
-            echo "::error::upstream commit $c not found in torvalds/linux or the stable tree"
+            echo "::error::upstream commit $c is not in the mainline or stable tree on git.kernel.org"
             exit 1
           done
       - name: compare catalog patches with upstream (git patch-id)

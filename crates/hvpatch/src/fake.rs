@@ -52,6 +52,8 @@ pub struct FakeState {
     pub traced: Vec<String>,
     /// Loaded patches report `replace = 0` (built with --no-replace).
     pub no_replace: bool,
+    /// Kernel releases in /boot.
+    pub installed: Vec<String>,
     /// Chronological record of mutating calls, for assertions.
     pub calls: Vec<String>,
     pub slept: Duration,
@@ -83,6 +85,7 @@ impl FakeKernel {
                 blockers: vec![],
                 traced: vec![],
                 no_replace: false,
+                installed: vec![release.into()],
                 calls: vec![],
                 slept: Duration::ZERO,
             }),
@@ -295,6 +298,10 @@ impl KernelOps for FakeKernel {
 
     fn traced_functions(&self) -> Result<Vec<String>> {
         Ok(self.st.borrow().traced.clone())
+    }
+
+    fn installed_kernels(&self) -> Result<Vec<String>> {
+        Ok(self.st.borrow().installed.clone())
     }
 
     fn sleep(&self, d: Duration) {

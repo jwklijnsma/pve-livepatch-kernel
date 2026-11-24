@@ -196,6 +196,22 @@ impl KernelOps for LinuxKernel {
         Ok(out)
     }
 
+    fn installed_kernels(&self) -> Result<Vec<String>> {
+        let mut out = Vec::new();
+        let dir = match fs::read_dir(self.p("/boot")) {
+            Ok(d) => d,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(out),
+            Err(e) => return Err(e).context("reading /boot"),
+        };
+        for e in dir.flatten() {
+            if let Some(r) = e.file_name().to_str().and_then(|n| n.strip_prefix("vmlinuz-")) {
+                out.push(r.to_string());
+            }
+        }
+        out.sort();
+        Ok(out)
+    }
+
     fn sleep(&self, d: Duration) {
         std::thread::sleep(d)
     }

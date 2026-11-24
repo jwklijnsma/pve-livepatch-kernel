@@ -43,8 +43,8 @@ rm -f "$TREE/localversion-pve"
 
 # A fresh output directory: nothing from an earlier build can end up
 # signed or published by mistake.
-rm -rf "$OUT"
 mkdir -p "$OUT"
+find "$OUT" -mindepth 1 -delete
 
 log "config and toolchain gate"
 cp "$SHIPPED/config" "$TREE/.config"
@@ -122,7 +122,8 @@ hvpatch-tool gate-a --module "$OUT/$NAME.ko" --kernel "$KVER" --expected-name "$
 log "source bundle"
 BASE=$(git -C "$TREE" rev-parse 'HEAD~1')
 PATCHED=$(git -C "$TREE" rev-parse HEAD)
-KSRC="$WORK/linux-$KVER-$PATCHED.tar.xz"
+mkdir -p "$WORK/cache"
+KSRC="$WORK/cache/linux-$KVER-$PATCHED.tar.xz"
 if [ ! -s "$KSRC" ]; then
   git -C "$TREE" archive --format=tar --prefix="linux-$KVER/" HEAD | xz -T0 -6 > "$KSRC.tmp"
   mv "$KSRC.tmp" "$KSRC"

@@ -41,7 +41,18 @@ All notable changes to this project are documented here. The format follows
   compressed shipped modules are unpacked; `build.sh` starts from an empty
   output directory and marks a dirty catalog.
 - CI compares the catalog patches with the upstream commits (`git
-  patch-id`), as documented.
+  patch-id`), as documented. The commits come from git.kernel.org (mainline
+  or stable) only, which serves nothing outside its own history.
+- `run.sh` mounts single directories per stage, never the whole build
+  directory, and checks on the host that `out/` and `shipped/` are still
+  plain directories before the next stage.
+
+### Added
+
+- **Reboot recommendation:** `hvpatch status` names a newer installed
+  kernel that waits for the next reboot (reboot reason, exit code 12,
+  metric `hvpatch_newer_kernel_installed`). Livepatches bridge the time to
+  the maintenance window; they do not replace booting the new kernel.
 
 ## [0.2.1] - 2026-11-24
 

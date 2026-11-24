@@ -128,12 +128,28 @@ pub trait KernelOps {
     /// trampolines, function tracers) are attached to. Best effort: empty
     /// if tracefs/debugfs is not mounted.
     fn traced_functions(&self) -> Result<Vec<String>>;
+    /// Kernel releases installed on disk (/boot/vmlinuz-<release>).
+    fn installed_kernels(&self) -> Result<Vec<String>>;
     fn sleep(&self, d: Duration);
 }
 
 /// Parse `/sys/kernel/tracing/enabled_functions`: one function per line,
 /// followed by flags and the attached ops. Lines whose only user is the
 /// livepatch handler are ours (a previous level) and do not conflict.
+/// The newest installed kernel of the same flavor (e.g. `-pve`) that is
+/// newer than the running one: the node boots it on the next reboot.
+pub fn newer_installed_kernel(running: &str, installed: &[String]) -> Option<String> {
+    let flavor =
+        |r: &str| r.rsplit_once('-').map(|(_, f)| f.to_string()).filter(|f| !f.bytes().all(|b| b.is_ascii_digit()));
+    let want = flavor(running);
+    installed
+        .iter()
+        .filter(|k| flavor(k) == want)
+        .filter(|k| klp_core::naming::cmp_version(k, running).is_gt())
+        .max_by(|a, b| klp_core::naming::cmp_version(a, b))
+        .cloned()
+}
+
 pub fn parse_enabled_functions(text: &str) -> Vec<String> {
     text.lines()
         .filter(|l| !l.contains("klp_ftrace_handler"))
@@ -233,6 +249,15 @@ pub fn is_bad_kmsg(r: &KmsgRecord) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn newer_kernel_detection() {
+        let v = |l: &[&str]| l.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let inst = v(&["6.17.2-1-pve", "7.3.5-1-pve", "7.3.10-2-pve", "7.3.9-1-pve", "7.4.0-1-foo"]);
+        assert_eq!(newer_installed_kernel("7.3.5-1-pve", &inst).as_deref(), Some("7.3.10-2-pve"));
+        assert_eq!(newer_installed_kernel("7.3.10-2-pve", &inst), None);
+        assert_eq!(newer_installed_kernel("7.3.5-1-pve", &v(&["7.3.5-1-pve"])), None);
+    }
 
     #[test]
     fn taint_letters() {

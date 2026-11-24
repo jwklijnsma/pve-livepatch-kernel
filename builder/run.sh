@@ -66,20 +66,32 @@ DEV=()
 [ -e /dev/kvm ] && DEV=(--device /dev/kvm)
 
 W=/work/build/$KVER
+# Each stage gets single directories, never all of build/<kver>: a stage
+# cannot replace a mount point, so it cannot turn out/ or shipped/ into a
+# symlink that the host would follow when mounting them for the next stage.
+for d in shipped src out cache; do
+  [ -L "$BUILD/$d" ] && die "$BUILD/$d is a symlink; remove it"
+  mkdir -p "$BUILD/$d"
+done
+check_dirs() {
+  for d in shipped out; do
+    { [ -d "$BUILD/$d" ] && [ ! -L "$BUILD/$d" ]; } || die "$BUILD/$d is not a plain directory any more"
+  done
+}
 SHIPPED_RO=(-v "$BUILD/shipped:$W/shipped:ro")
 
 # Shipped artifacts: fetched once per kernel release; delete
 # build/<kver>/shipped to fetch them again.
 if [ ! -s "$BUILD/shipped/build-id" ]; then
   echo "run.sh: [0/3] fetch the shipped kernel packages"
-  rm -rf "$BUILD/shipped"
-  mkdir -p "$BUILD/shipped"
+  find "$BUILD/shipped" -mindepth 1 -delete
   "$ENGINE" run --rm -v "$BUILD/shipped:$W/shipped" \
     "$IMAGE" /opt/hvpatch/builder/fetch-shipped.sh "$KVER" "$W/shipped"
 fi
 
 echo "run.sh: [1/3] build (no keys)"
-"$ENGINE" run --rm -v "$ROOT:/work:ro" -v "$BUILD:$W" "${SHIPPED_RO[@]}" -w /work \
+"$ENGINE" run --rm -v "$ROOT:/work:ro" "${SHIPPED_RO[@]}" \
+  -v "$BUILD/src:$W/src" -v "$BUILD/out:$W/out" -v "$BUILD/cache:$W/cache" -w /work \
   -e BUILDER_IMAGE="$IMAGE_ID" -e CATALOG="/work/$CATALOG" \
   "$IMAGE" /opt/hvpatch/builder/build.sh "$KVER" "$LEVEL" "$W"
 if ! compgen -G "$BUILD/out/klp_*.ko" >/dev/null; then
@@ -87,12 +99,14 @@ if ! compgen -G "$BUILD/out/klp_*.ko" >/dev/null; then
   exit 0
 fi
 
+check_dirs
 echo "run.sh: [2/3] sign (key only here, no tree, no network)"
 "$ENGINE" run --rm --network=none \
   -v "$BUILD/out:$W/out" "${SHIPPED_RO[@]}" -v "$KEYS:/keys:ro" \
   -e BUILDER_IMAGE="$IMAGE_ID" -e MODULE_KEY=/keys/module.priv -e MODULE_CERT=/keys/module-cert.der \
   "$IMAGE" /opt/hvpatch/builder/sign-module.sh "$KVER" "$LEVEL" "$W"
 
+check_dirs
 echo "run.sh: [3/3] QEMU stage (no tree, no keys, no network)"
 PREV_MOUNT=()
 if [ -n "$PREV" ]; then

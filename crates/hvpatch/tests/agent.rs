@@ -182,6 +182,21 @@ fn apply_happy_path_and_status() {
 }
 
 #[test]
+fn newer_installed_kernel_recommends_reboot() {
+    let env = Env::new();
+    env.publish_level(1);
+    let a = env.agent(kernel());
+    a.apply(&explicit()).unwrap();
+    assert!(report::collect(&a).unwrap().newer_kernel_installed.is_none());
+    a.kernel.st.borrow_mut().installed =
+        vec!["7.0.14-1-pve".into(), KVER.into(), "7.3.9-1-pve".into(), "7.3.10-1-pve".into()];
+    let r = report::collect(&a).unwrap();
+    assert_eq!(r.newer_kernel_installed.as_deref(), Some("7.3.10-1-pve"));
+    assert!(r.reboot_reasons.iter().any(|x| x.contains("7.3.10-1-pve is installed")), "{:?}", r.reboot_reasons);
+    assert!(r.to_prometheus().contains("hvpatch_newer_kernel_installed 1"));
+}
+
+#[test]
 fn atomic_replace_upgrades_and_unloads_old_module() {
     let env = Env::new();
     env.publish_level(1);

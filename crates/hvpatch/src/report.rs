@@ -57,6 +57,8 @@ pub struct StatusReport {
     pub not_covered: Vec<NotCovered>,
     pub reboot_required: bool,
     pub reboot_reasons: Vec<String>,
+    /// A newer kernel is installed and waits for the next reboot.
+    pub newer_kernel_installed: Option<String>,
     pub last_error: Option<String>,
     /// Observations about the live kernel that explain or resolve the state.
     pub hints: Vec<String>,
@@ -118,6 +120,11 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         }
         None => (None, vec![], vec![]),
     };
+    let newer_kernel_installed =
+        crate::kernel::newer_installed_kernel(&kernel, &agent.kernel.installed_kernels().unwrap_or_default());
+    if let Some(k) = &newer_kernel_installed {
+        reboot_reasons.push(format!("kernel {k} is installed but not running: boot it in the next maintenance window"));
+    }
     let mut hints = leftover_hints(agent, &patches);
     if ks.phase == Phase::Failed {
         if ks.stuck {
@@ -147,6 +154,7 @@ pub fn collect<K: KernelOps>(agent: &Agent<K>) -> Result<StatusReport> {
         not_covered,
         reboot_required: !reboot_reasons.is_empty(),
         reboot_reasons,
+        newer_kernel_installed,
         quarantined: ks
             .quarantined
             .iter()
@@ -310,6 +318,11 @@ impl StatusReport {
             "1 if a reboot into a newer kernel is required.",
             (self.reboot_required as u8).to_string(),
         );
+        g(
+            "hvpatch_newer_kernel_installed",
+            "1 if a newer kernel is installed and waits for a reboot.",
+            (self.newer_kernel_installed.is_some() as u8).to_string(),
+        );
         g("hvpatch_cves_covered", "CVEs fixed by the active livepatch.", self.covered.len().to_string());
         g(
             "hvpatch_quarantined",
@@ -378,6 +391,7 @@ mod tests {
             not_covered: vec![],
             reboot_required: false,
             reboot_reasons: vec![],
+            newer_kernel_installed: None,
             last_error: None,
             hints: vec![],
             quarantined: vec![],
