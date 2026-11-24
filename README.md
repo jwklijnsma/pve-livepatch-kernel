@@ -249,6 +249,7 @@ Solutions GmbH.
 - [Writing fixes](docs/writing-fixes.md): callbacks, shadow variables, states
 - [Integrations](contrib/README.md): Checkmk, Ansible role and rollout, notification hook
 - [Kernel 7.0](docs/kernel-7.0.md): the experimental 7.0 build path
+- [Threat model](docs/threat-model.md) and [key management](docs/key-management.md)
 - [Security policy](SECURITY.md)
 
 ## Repository layout

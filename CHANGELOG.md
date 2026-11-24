@@ -54,6 +54,9 @@ All notable changes to this project are documented here. The format follows
 
 ### Added
 
+- `docs/threat-model.md` and `docs/key-management.md` (two keys, offline
+  manifest key, rotation without a flag day, what to do after a leak).
+
 - **Integrations** (`contrib/`): Checkmk local check, notification hook
   example, Ansible role and a rollout playbook (canary first, one node at a
   time, stop at the first unhealthy node). Shipped as examples in the
