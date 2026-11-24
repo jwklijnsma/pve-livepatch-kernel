@@ -7,3 +7,4 @@
 #
 # 7.3 and later: <kernel release>  <proxmox-kernel.git commit of tag proxmox/<pkgver>>
 # 7.0 (experimental): <kernel release>  <pve-kernel.git commit that released it>
+7.0.14-30-pve  903d16629185ee98377f175336910d999c7d19b8
