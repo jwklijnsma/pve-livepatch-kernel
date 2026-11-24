@@ -4,11 +4,30 @@
 
 Please do not open a public issue for security problems in hvpatch itself
 (agent, build tooling, published modules or signing). Use GitHub's private
-vulnerability reporting for this repository ("Security" tab → "Report a
-vulnerability"). We acknowledge reports within three working days.
+vulnerability reporting for this repository:
+[report a vulnerability](https://github.com/prepaid-host/hvpatch/security/advisories/new)
+("Security" tab → "Report a vulnerability").
+
+What happens next:
+
+- We confirm the report within 3 working days and give a first assessment
+  within 10 days.
+- We aim to release a fix within 30 days, depending on severity and
+  complexity, and keep you informed.
+- Coordinated disclosure: we publish a GitHub Security Advisory (with a CVE
+  where applicable) once a fixed release is available, at the latest 90
+  days after the report unless we agree on another date with you. We credit
+  reporters who want to be named.
 
 Kernel vulnerabilities themselves belong to the kernel security team and to
 Proxmox. This project only packages public fixes.
+
+## Supported versions
+
+| Version | Security fixes |
+| --- | --- |
+| latest release (0.3.x) | yes |
+| older releases | no, please upgrade |
 
 ## What you trust
 

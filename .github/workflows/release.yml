@@ -77,10 +77,16 @@ jobs:
           upload-release-assets: false
       - run: cd dist && sha256sum * > SHA256SUMS && cat SHA256SUMS
       - name: build provenance attestation
+        id: provenance
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/*
+      - name: provenance bundle as a release asset (offline verification)
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          BUNDLE: ${{ steps.provenance.outputs.bundle-path }}
+        run: cp "$BUNDLE" dist/hvpatch.intoto.jsonl
       - name: SBOM attestation for the binaries and the package
         if: startsWith(github.ref, 'refs/tags/v')
         uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
@@ -114,6 +120,8 @@ jobs:
           \`\`\`
 
           \`hvpatch.cdx.json\` lists every Rust dependency (CycloneDX SBOM).
+          \`hvpatch.intoto.jsonl\` is the signed build provenance, for offline
+          verification (\`gh attestation verify --bundle hvpatch.intoto.jsonl\`).
           NOTES
           cat notes.md
       - name: create release
