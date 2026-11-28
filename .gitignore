@@ -10,3 +10,5 @@
 /builder/hvpatch-tool
 /keys/
 /catalog-drafts/
+site/
+.cache/

@@ -358,10 +358,17 @@ jobs:
           git diff --cached --quiet && { echo "nothing changed"; exit 0; }
           git commit -qm "publish: $(ls ../results | sed 's/^result-//' | tr '\n' ' ')" -m "From ${GITHUB_SHA::12}, run ${GITHUB_RUN_ID}"
           git push origin "$REPO_BRANCH"
+      - name: docs site (Zensical, served under /docs/)
+        run: |
+          python3 -m venv /tmp/docs-venv
+          /tmp/docs-venv/bin/pip install -q -r requirements-docs.txt
+          /tmp/docs-venv/bin/zensical build --clean
+          mv site _docs_site
       - name: site (symlinks dereferenced)
         run: |
           mkdir -p site
           rsync -aL --exclude .git --exclude 'v1/*/source/*.tar.xz' repo/ site/
+          rm -rf site/docs && cp -r _docs_site site/docs
           touch site/.nojekyll
       - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
