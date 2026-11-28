@@ -63,4 +63,4 @@ verified on the node.
 
 ## Reporting
 
-See [SECURITY.md](../SECURITY.md).
+See [SECURITY.md](https://github.com/jwklijnsma/pve-livepatch-kernel/blob/main/SECURITY.md).
